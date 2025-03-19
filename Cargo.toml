@@ -1,0 +1,21 @@
+[package]
+name = "tfs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-rdma = "0.5.0"
+futures-macro = "0.3.31"
+tokio = "1.44.1"
+
+[patch.crates-io]
+hex-simd = { git = "https://github.com/Nugine/simd/", rev = "21e8951" }
+rdma-sys = { git = "https://github.com/2022tgoel/rdma-sys" }
+
+[[bin]]
+name = "bench_rdma_client"
+path = "src/bin/bench_rdma/client.rs"
+
+[[bin]]
+name = "bench_rdma_server"
+path = "src/bin/bench_rdma/server.rs"
