@@ -26,3 +26,11 @@ path = "src/bin/rdma_test/client.rs"
 [[bin]]
 name = "rdma_server"
 path = "src/bin/rdma_test/server.rs"
+
+[[bin]]
+name = "chunkserver"
+path = "src/bin/chunkserver_test/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/bin/chunkserver_test/client.rs"

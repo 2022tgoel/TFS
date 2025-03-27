@@ -8,7 +8,7 @@ async fn main() {
 
     let hostname = my_name().unwrap();
     let peer = env::var("PEER_HOSTNAME").expect("PEER_HOSTNAME is not set");
-    let mut rpc = RpcSocket::new(ib, hostname, peer);
+    let rpc = RpcSocket::new(ib, hostname, peer);
 
     rpc.serve().await.unwrap();
 }

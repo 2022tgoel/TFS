@@ -10,7 +10,7 @@ use std::ptr;
 use zeromq::{Socket, SocketRecv, SocketSend};
 
 const ZMQ_SERVER_PORT: u16 = 5555;
-const MIN_WR_ID: u64 = 1000;
+pub const MIN_WR_ID: u64 = 1000;
 
 /// Represents an InfiniBand socket for RDMA communication
 /// This socket can handle multiple remote connections
@@ -87,7 +87,6 @@ impl IBSocket {
         let qp = prepared_qp.handshake(endpoint)?;
         // Store the queue pair
         self.qps.insert(remote_node.clone(), qp);
-        dbg!("IB Socket connected to {}", remote_node);
 
         Ok(())
     }
@@ -172,8 +171,9 @@ impl IBSocket {
         Ok(self.id - 1)
     }
 
-    pub fn poll_completions(&self, completions: &mut [ibverbs::ibv_wc]) -> Result<()> {
-        self.cq.poll(completions)
+    pub fn poll_completions(&self, completions: &mut [ibverbs::ibv_wc]) -> Result<usize> {
+        let completed = self.cq.poll(completions)?;
+        Ok(completed.len())
     }
 
     pub fn get_completion(&self, wr_id: u64) -> Result<()> {

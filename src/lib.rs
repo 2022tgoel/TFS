@@ -1,2 +1,3 @@
-pub mod net;
 pub mod chunkserver;
+pub mod net;
+pub mod client;
