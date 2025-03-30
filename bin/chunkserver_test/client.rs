@@ -6,20 +6,20 @@ use tfs::net::utils::my_name;
 async fn main() {
     let hostname = my_name().unwrap();
     let peer = env::var("PEER_HOSTNAME").expect("PEER_HOSTNAME is not set");
-    
-    // Create RPC client
-    let mut client = RpcClient::new(hostname.clone(), peer.clone()).unwrap();
 
-    
+    // Create RPC client
+    let mut client = RpcClient::new(hostname.clone(), peer.clone()).await.unwrap();
+
     // Prepare test data
     let test_data = b"Hello, world!";
-    
+
+    client.connect_ib().await.unwrap();
     println!("Sending PutRequest...");
     let start = Instant::now();
-    
-    // Send PutRequest
+
+    // Send PutRequest    
     let result = client.send_put_request(1, 1, test_data).await;
-    
+
     let duration = start.elapsed();
     println!("Time taken: {:?}", duration);
     match result {

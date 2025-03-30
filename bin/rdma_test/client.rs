@@ -1,5 +1,4 @@
 use std::env;
-use std::time::Duration;
 use std::time::Instant;
 use tfs::net::{IBSocket, RpcSocket, rpc_socket::MemRegionInfo, utils::my_name};
 

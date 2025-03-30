@@ -6,13 +6,18 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.97"
 bytes = "1.10.1"
+clap = "4.5.35"
 dashmap = "6.1.0"
+fuser = "0.15.1"
+futures-core = "0.3.31"
 hostname = "0.4.0"
 ibverbs = { git = "https://github.com/2022tgoel/rust-ibverbs" } 
 ibverbs-sys = { git = "https://github.com/2022tgoel/rust-ibverbs" }
+libc = "0.2.171"
 serde = "1.0.219"
 serde_json = "1.0.140"
 tokio = "1.44.1"
+tokio-zookeeper = "0.4.0"
 zeromq = "0.4.1"
 
 [lib]
@@ -21,16 +26,20 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "rdma_client"
-path = "src/bin/rdma_test/client.rs"
+path = "bin/rdma_test/client.rs"
 
 [[bin]]
 name = "rdma_server"
-path = "src/bin/rdma_test/server.rs"
+path = "bin/rdma_test/server.rs"
 
 [[bin]]
 name = "chunkserver"
-path = "src/bin/chunkserver_test/server.rs"
+path = "bin/chunkserver_test/server.rs"
 
 [[bin]]
 name = "client"
-path = "src/bin/chunkserver_test/client.rs"
+path = "bin/chunkserver_test/client.rs"
+
+[[bin]]
+name = "mount"
+path = "src/client/fuse.rs"

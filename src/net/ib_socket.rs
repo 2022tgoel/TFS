@@ -44,22 +44,17 @@ impl IBSocket {
         })
     }
 
-    fn is_connected(&self, remote_addr: &str) -> bool {
+    pub fn is_connected(&self, remote_addr: &str) -> bool {
         self.qps.contains_key(remote_addr)
     }
 
     /// Connects to a remote node
     pub async fn connect(&mut self, local_node: String, remote_node: String) -> Result<()> {
-        // If already connected, return early
-        if self.is_connected(&remote_node) {
-            return Ok(());
-        }
-
         // Create the queue pair
         let prepared_qp = self
             .pd
             .create_qp(self.cq, self.cq, ibv_qp_type::IBV_QPT_RC)?
-            .set_gid_index(0)
+            .set_gid_index(0) // Used to determine the routing domain
             .allow_remote_rw()
             .build()?;
 
@@ -192,28 +187,60 @@ impl IBSocket {
             if let Some((status, err)) = completion.error() {
                 // Get more detailed error information
                 let status_str = match status {
-                    ibv_wc_status::IBV_WC_SUCCESS => "Success",
-                    ibv_wc_status::IBV_WC_LOC_LEN_ERR => "Local Length Error",
-                    ibv_wc_status::IBV_WC_LOC_QP_OP_ERR => "Local QP Operation Error",
-                    ibv_wc_status::IBV_WC_LOC_EEC_OP_ERR => "Local EEC Operation Error",
-                    ibv_wc_status::IBV_WC_LOC_PROT_ERR => "Local Protection Error",
-                    ibv_wc_status::IBV_WC_WR_FLUSH_ERR => "Work Request Flush Error",
-                    ibv_wc_status::IBV_WC_MW_BIND_ERR => "Memory Window Binding Error",
-                    ibv_wc_status::IBV_WC_BAD_RESP_ERR => "Bad Response Error",
-                    ibv_wc_status::IBV_WC_LOC_ACCESS_ERR => "Local Access Error",
-                    ibv_wc_status::IBV_WC_REM_ACCESS_ERR => "Remote Access Error",
-                    ibv_wc_status::IBV_WC_REM_OP_ERR => "Remote Operation Error",
-                    ibv_wc_status::IBV_WC_RETRY_EXC_ERR => "Retry Exceeded Error",
-                    ibv_wc_status::IBV_WC_RNR_RETRY_EXC_ERR => "RNR Retry Exceeded Error",
-                    ibv_wc_status::IBV_WC_LOC_RDD_VIOL_ERR => "Local RDD Violation Error",
-                    ibv_wc_status::IBV_WC_REM_INV_REQ_ERR => "Remote Invalid Request Error",
-                    ibv_wc_status::IBV_WC_REM_INV_RD_REQ_ERR => "Remote Invalid Read Request Error",
-                    ibv_wc_status::IBV_WC_REM_ABORT_ERR => "Remote Operation Aborted",
-                    ibv_wc_status::IBV_WC_INV_EECN_ERR => "Invalid EE Context Number",
-                    ibv_wc_status::IBV_WC_INV_EEC_STATE_ERR => "Invalid EE Context State",
-                    ibv_wc_status::IBV_WC_FATAL_ERR => "Fatal Error",
-                    ibv_wc_status::IBV_WC_RESP_TIMEOUT_ERR => "Response Timeout Error",
-                    ibv_wc_status::IBV_WC_GENERAL_ERR => "General Error",
+                    ibv_wc_status::IBV_WC_SUCCESS => "IBV_WC_SUCCESS: Success",
+                    ibv_wc_status::IBV_WC_LOC_LEN_ERR => "IBV_WC_LOC_LEN_ERR: Local Length Error",
+                    ibv_wc_status::IBV_WC_LOC_QP_OP_ERR => {
+                        "IBV_WC_LOC_QP_OP_ERR: Local QP Operation Error"
+                    }
+                    ibv_wc_status::IBV_WC_LOC_EEC_OP_ERR => {
+                        "IBV_WC_LOC_EEC_OP_ERR: Local EEC Operation Error"
+                    }
+                    ibv_wc_status::IBV_WC_LOC_PROT_ERR => {
+                        "IBV_WC_LOC_PROT_ERR: Local Protection Error"
+                    }
+                    ibv_wc_status::IBV_WC_WR_FLUSH_ERR => {
+                        "IBV_WC_WR_FLUSH_ERR: Work Request Flush Error"
+                    }
+                    ibv_wc_status::IBV_WC_MW_BIND_ERR => {
+                        "IBV_WC_MW_BIND_ERR: Memory Window Binding Error"
+                    }
+                    ibv_wc_status::IBV_WC_BAD_RESP_ERR => "IBV_WC_BAD_RESP_ERR: Bad Response Error",
+                    ibv_wc_status::IBV_WC_LOC_ACCESS_ERR => {
+                        "IBV_WC_LOC_ACCESS_ERR: Local Access Error"
+                    }
+                    ibv_wc_status::IBV_WC_REM_ACCESS_ERR => {
+                        "IBV_WC_REM_ACCESS_ERR: Remote Access Error"
+                    }
+                    ibv_wc_status::IBV_WC_REM_OP_ERR => "IBV_WC_REM_OP_ERR: Remote Operation Error",
+                    ibv_wc_status::IBV_WC_RETRY_EXC_ERR => {
+                        "IBV_WC_RETRY_EXC_ERR: Retry Exceeded Error"
+                    }
+                    ibv_wc_status::IBV_WC_RNR_RETRY_EXC_ERR => {
+                        "IBV_WC_RNR_RETRY_EXC_ERR: RNR Retry Exceeded Error"
+                    }
+                    ibv_wc_status::IBV_WC_LOC_RDD_VIOL_ERR => {
+                        "IBV_WC_LOC_RDD_VIOL_ERR: Local RDD Violation Error"
+                    }
+                    ibv_wc_status::IBV_WC_REM_INV_REQ_ERR => {
+                        "IBV_WC_REM_INV_REQ_ERR: Remote Invalid Request Error"
+                    }
+                    ibv_wc_status::IBV_WC_REM_INV_RD_REQ_ERR => {
+                        "IBV_WC_REM_INV_RD_REQ_ERR: Remote Invalid Read Request Error"
+                    }
+                    ibv_wc_status::IBV_WC_REM_ABORT_ERR => {
+                        "IBV_WC_REM_ABORT_ERR: Remote Operation Aborted"
+                    }
+                    ibv_wc_status::IBV_WC_INV_EECN_ERR => {
+                        "IBV_WC_INV_EECN_ERR: Invalid EE Context Number"
+                    }
+                    ibv_wc_status::IBV_WC_INV_EEC_STATE_ERR => {
+                        "IBV_WC_INV_EEC_STATE_ERR: Invalid EE Context State"
+                    }
+                    ibv_wc_status::IBV_WC_FATAL_ERR => "IBV_WC_FATAL_ERR: Fatal Error",
+                    ibv_wc_status::IBV_WC_RESP_TIMEOUT_ERR => {
+                        "IBV_WC_RESP_TIMEOUT_ERR: Response Timeout Error"
+                    }
+                    ibv_wc_status::IBV_WC_GENERAL_ERR => "IBV_WC_GENERAL_ERR: General Error",
                     _ => "Unknown Error",
                 };
                 return Err(anyhow::anyhow!(
