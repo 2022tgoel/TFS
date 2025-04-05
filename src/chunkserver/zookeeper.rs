@@ -20,7 +20,7 @@ pub struct ZookeeperClient {
 impl ZookeeperClient {
     pub async fn new() -> Result<Self> {
         let addr = format!("{}:{}", "127.0.0.1", ZOOKEERPER_CLIENT_PORT);
-        let (client, default_watcher) = ZooKeeper::connect(&addr.parse()?).await?;
+        let (client, _default_watcher) = ZooKeeper::connect(&addr.parse()?).await?;
         let name: Vec<u8> = my_name()?.into_bytes();
         let my_name: &'static [u8] = Box::leak(Box::new(name));
         // Construct the chain of chunkserver nodes in zookeeper

@@ -112,12 +112,13 @@ impl IBSocket {
     }
 
     /// Reads data using RDMA
-    pub fn rdma_read(
+    pub fn rdma_op(
         &mut self,
         remote_node: &str,
         lmr: &mut MemoryRegion<u8>,
         raddr: u64,
         rkey: u32,
+        opcode: ::std::os::raw::c_uint,
     ) -> Result<u64> {
         let mut sge = ibv_sge {
             addr: unsafe { (*lmr.mr).addr } as u64,
@@ -129,7 +130,7 @@ impl IBSocket {
             next: ptr::null::<ibv_send_wr>() as *mut _,
             sg_list: &mut sge as *mut _,
             num_sge: 1,
-            opcode: ibv_wr_opcode::IBV_WR_RDMA_READ,
+            opcode,
             send_flags: ibv_send_flags::IBV_SEND_SIGNALED.0,
             wr: ibv_send_wr__bindgen_ty_2 {
                 rdma: ibv_send_wr__bindgen_ty_2__bindgen_ty_1 {
@@ -164,6 +165,39 @@ impl IBSocket {
 
         self.id += 1;
         Ok(self.id - 1)
+    }
+
+    /// Reads data using RDMA
+    pub fn rdma_read(
+        &mut self,
+        remote_node: &str,
+        lmr: &mut MemoryRegion<u8>,
+        raddr: u64,
+        rkey: u32,
+    ) -> Result<u64> {
+        self.rdma_op(
+            remote_node,
+            lmr,
+            raddr,
+            rkey,
+            ibv_wr_opcode::IBV_WR_RDMA_READ,
+        )
+    }
+
+    pub fn rdma_write(
+        &mut self,
+        remote_node: &str,
+        lmr: &mut MemoryRegion<u8>,
+        raddr: u64,
+        rkey: u32,
+    ) -> Result<u64> {
+        self.rdma_op(
+            remote_node,
+            lmr,
+            raddr,
+            rkey,
+            ibv_wr_opcode::IBV_WR_RDMA_WRITE,
+        )
     }
 
     pub fn poll_completions(&self, completions: &mut [ibverbs::ibv_wc]) -> Result<usize> {

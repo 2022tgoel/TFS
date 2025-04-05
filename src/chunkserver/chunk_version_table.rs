@@ -1,1 +1,97 @@
+use anyhow::Result;
+use dashmap::DashMap;
+use dashmap::mapref::one::RefMut;
+use std::cmp::max;
 
+struct ChunkVersions {
+    clean_version: Option<u64>,
+    dirty_versions: Vec<u64>,
+}
+
+pub enum State {
+    Commited,
+    Aborted,
+}
+
+pub struct ChunkVersionTable {
+    inner: DashMap<(u64, u64), ChunkVersions>,
+}
+
+impl ChunkVersions {
+    pub fn new() -> Self {
+        Self {
+            clean_version: None,
+            dirty_versions: Vec::from([0]),
+        }
+    }
+}
+
+impl ChunkVersionTable {
+    pub fn new() -> Self {
+        Self {
+            inner: DashMap::new(),
+        }
+    }
+
+    // get a version that is higher than all the existing versions
+    pub fn get_new_version(&self, file_id: u64, chunk_id: u64) -> u64 {
+        if let Some(versions) = &mut self.inner.get_mut(&(file_id, chunk_id)) {
+            let mut version = if let Some(v) = versions.clean_version {
+                v
+            } else {
+                0
+            };
+            // get the highest dirty version
+            version = if let Some(v) = versions.dirty_versions.iter().max() {
+                max(*v, version)
+            } else {
+                version
+            };
+            versions.dirty_versions.push(version);
+            version
+        } else {
+            self.inner.insert((file_id, chunk_id), ChunkVersions::new());
+            0
+        }
+    }
+
+    pub fn get_version(&self, file_id: u64, chunk_id: u64) -> Option<u64> {
+        if let Some(versions) = self.inner.get(&(file_id, chunk_id)) {
+            if let Some(v) = versions.clean_version {
+                if versions.dirty_versions.iter().any(|x| *x > v) {
+                    return None;
+                } else {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn commit_version(&self, file_id: u64, chunk_id: u64, version: u64) -> Result<State> {
+        let mut versions: RefMut<'_, (u64, u64), ChunkVersions> = self
+            .inner
+            .get_mut(&(file_id, chunk_id))
+            .ok_or(anyhow::anyhow!("Chunk version table in an invalid state"))?;
+
+        if let Some(v) = versions.clean_version {
+            if v > version {
+                versions.dirty_versions.retain(|&x| x != version);
+                return Ok(State::Aborted);
+            }
+        }
+
+        versions.clean_version = Some(version);
+        let mut remove = Vec::new();
+        for v in versions.dirty_versions.iter() {
+            if v < &version {
+                remove.push(*v);
+            }
+        }
+        for v in remove.iter() {
+            std::fs::remove_file(format!("/scratch/files/{}_{}_{}.txt", file_id, chunk_id, v))?;
+            versions.dirty_versions.retain(|&x| x != *v);
+        }
+        Ok(State::Commited)
+    }
+}

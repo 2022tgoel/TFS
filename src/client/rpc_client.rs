@@ -1,8 +1,7 @@
-use crate::chunkserver::{CHUNK_SIZE, QPInfo, PutInfo, RpcMessage, SERVER_PORT};
+use crate::chunkserver::{CHUNK_SIZE, GetInfo, PutInfo, QPInfo, RpcMessage, SERVER_PORT};
 use crate::net::IBSocket;
 use anyhow::Result;
 use ibverbs::MemoryRegion;
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -47,11 +46,12 @@ impl RpcClient {
         let response: RpcMessage = serde_json::from_slice(&buf[..n])?;
 
         match response {
-            RpcMessage::Response() => Ok(()),
+            RpcMessage::Response(_) => Ok(()),
             _ => Err(anyhow::anyhow!("Unexpected response type")),
         }
     }
 
+    // These are kind of unsafe at the moment, they should not be issued concurrently
     pub async fn send_put_request(
         &mut self,
         file_id: u64,
@@ -81,7 +81,42 @@ impl RpcClient {
         let response: RpcMessage = serde_json::from_slice(&buf[..n])?;
 
         match response {
-            RpcMessage::Response() => Ok(()),
+            RpcMessage::Response(_) => Ok(()),
+            _ => Err(anyhow::anyhow!("Unexpected response type")),
+        }
+    }
+
+    pub async fn send_get_request(
+        &mut self,
+        file_id: u64,
+        chunk_id: u64,
+    ) -> Result<()> {
+        println!(
+            "Sending GetRequest to {}",
+            format!("{}:{}", self.server_name, SERVER_PORT)
+        );
+        // Clear the buffer
+        self.buffer[..CHUNK_SIZE].fill(0);
+
+        let get_request = RpcMessage::GetRequest(GetInfo {
+            client_name: self.local_addr.clone(),
+            file_id,
+            chunk_id,
+            remote_addr: unsafe { (*self.buffer.mr).addr } as u64,
+            rkey: self.buffer.rkey().key,
+        });
+        let request_bytes = serde_json::to_vec(&get_request)?;
+        self.stream.write_all(&request_bytes).await?;
+
+        let mut buf = vec![0; 1024];
+        let n = self.stream.read(&mut buf).await?;
+        let response: RpcMessage = serde_json::from_slice(&buf[..n])?;
+
+        // Print the data in the buffer
+        println!("Data in buffer: {:?}", self.buffer[..15].to_vec());
+
+        match response {
+            RpcMessage::Response(_) => Ok(()),
             _ => Err(anyhow::anyhow!("Unexpected response type")),
         }
     }
