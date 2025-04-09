@@ -31,7 +31,7 @@ async fn main() {
 
     // Send GetRequest
     let start = Instant::now();
-    let result = client.send_get_request(1, 1).await;
+    let result = client.send_get_request(1, 1, test_data.len()).await;
     let duration = start.elapsed();
     println!("Time taken: {:?}", duration);
     match result {

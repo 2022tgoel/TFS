@@ -1,4 +1,4 @@
-use crate::net::{IBSocket, MIN_WR_ID};
+use crate::net::{IBSocket, MIN_WR_ID, parse_completion_error};
 use anyhow::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -43,6 +43,9 @@ impl CompletionsManager {
                 for i in 0..n_completions {
                     let completion = &completions[i];
                     let wr_id = completion.wr_id();
+                    if let Err(e) = parse_completion_error(completion) {
+                        eprintln!("Error with RDMA operation: {}", e);
+                    }
                     if wr_id >= MIN_WR_ID {
                         loop {
                             // Wait until the request is submitted by the rpc_server

@@ -29,6 +29,7 @@ pub struct PutInfo {
     pub remote_addr: u64,
     pub rkey: u32,
     pub version: u64,
+    pub size: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -38,6 +39,7 @@ pub struct GetInfo {
     pub chunk_id: u64,
     pub remote_addr: u64,
     pub rkey: u32,
+    pub size: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -163,6 +165,7 @@ impl RpcServer {
                     println!("Received PutRequest from {}", put_info.client_name);
                     // Query zookeeper for chain information
                     let (is_head, next_node) = zookeeper.lock().await.get_chain_info().await?;
+                    let is_tail = next_node.is_none();
                     let version = if is_head {
                         chunk_version_table.get_new_version(put_info.file_id, put_info.chunk_id)
                     } else {
@@ -194,6 +197,7 @@ impl RpcServer {
                         &mut buffer,
                         put_info.remote_addr,
                         put_info.rkey,
+                        put_info.size,
                     )?;
 
                     let must_connect =
@@ -230,7 +234,7 @@ impl RpcServer {
                             drop(ib);
                             let mut buf = vec![0; 1024];
                             let n = next_socket.read(&mut buf).await?;
-                            let response: RpcMessage = serde_json::from_slice(&buf[..n])?;
+                            let _response: RpcMessage = serde_json::from_slice(&buf[..n])?;
                             println!("Received CreateQueuePair response from {}", next_node);
                         }
                         let resp = RpcMessage::PutRequest(PutInfo {
@@ -240,6 +244,7 @@ impl RpcServer {
                             remote_addr: unsafe { (*buffer.mr).addr } as u64,
                             rkey: buffer.rkey().key,
                             version: version,
+                            size: put_info.size,
                         });
                         next_socket.write_all(&serde_json::to_vec(&resp)?).await?;
                         let mut buf = vec![0; 1024];
@@ -265,7 +270,11 @@ impl RpcServer {
                         put_info.file_id, put_info.chunk_id, version
                     );
                     let mut file = File::create(file_path.clone()).await?;
-                    file.write_all(&buffer[..CHUNK_SIZE]).await?;
+                    file.write_all(&buffer[..put_info.size]).await?;
+                    // If tail, update the size of the file in zookeeper
+                    if is_tail {
+                        zookeeper.lock().await.update_size(put_info.file_id, put_info.size).await?;
+                    }
                     if let State::Aborted = chunk_version_table.commit_version(
                         put_info.file_id,
                         put_info.chunk_id,
@@ -285,6 +294,10 @@ impl RpcServer {
                             "/scratch/files/{}_{}_{}.txt",
                             get_info.file_id, get_info.chunk_id, version
                         );
+                        // Check if the file exists
+                        if !std::path::Path::new(&file_path).exists() {
+                            eprintln!("File {} does not exist", file_path);
+                        }
                         let mut file = File::open(file_path.clone()).await?;
                         // Read the chunk into a buffer
                         let mut buffer;
@@ -303,7 +316,7 @@ impl RpcServer {
                                 }
                             }
                         }
-                        file.read(&mut buffer).await?;
+                        file.read(&mut buffer[..get_info.size]).await?;
                         // Issue an rdma write
                         let mut ib = ib_socket.lock().await;
                         let wr_id = ib.rdma_write(
@@ -311,6 +324,7 @@ impl RpcServer {
                             &mut buffer,
                             get_info.remote_addr,
                             get_info.rkey,
+                            get_info.size,
                         )?;
                         drop(ib);
 
@@ -326,6 +340,7 @@ impl RpcServer {
                             .recv()
                             .await
                             .ok_or(anyhow::anyhow!("Error receiving from mpsc channel"))?;
+                        println!("Received GetRequest completion for wr_id {}", wr_id);
                         let resp = RpcMessage::Response(Status::Success);
                         socket.write_all(&serde_json::to_vec(&resp)?).await?;
                     } else {

@@ -1,1 +1,1 @@
-SLURM_NODELIST=`hostname` ./zookeeper/launch.py stop && ./zookeeper/launch.py start && cargo build && ./zookeeper/launch.py status && ./target/debug/chunkserver
+SLURM_NODELIST=`hostname` ./zookeeper/launch.py stop && ./zookeeper/launch.py start && sleep 1 && ./zookeeper/launch.py status && ./target/debug/chunkserver

@@ -1,11 +1,12 @@
 use crate::net::utils::my_name;
 use anyhow::Result;
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_zookeeper::*;
 
-const ZOOKEERPER_CLIENT_PORT: u16 = 2181;
+pub const ZOOKEEPER_CLIENT_PORT: u16 = 2181;
 const ZOOKEEPER_SESSION_TIMEOUT: u64 = 4000; // ms, this is twice the tickTime in zoo.cfg
 // Reference: https://zookeeper.apache.org/doc/current/zookeeperStarted.html
 
@@ -19,7 +20,7 @@ pub struct ZookeeperClient {
 
 impl ZookeeperClient {
     pub async fn new() -> Result<Self> {
-        let addr = format!("{}:{}", "127.0.0.1", ZOOKEERPER_CLIENT_PORT);
+        let addr = format!("{}:{}", "127.0.0.1", ZOOKEEPER_CLIENT_PORT);
         let (client, _default_watcher) = ZooKeeper::connect(&addr.parse()?).await?;
         let name: Vec<u8> = my_name()?.into_bytes();
         let my_name: &'static [u8] = Box::leak(Box::new(name));
@@ -129,6 +130,21 @@ impl ZookeeperClient {
                 return Ok((children[0] == node_path, None));
             }
         }
+    }
+
+    /// Update the size of the inode
+    pub async fn update_size(&self, inode: u64, size: usize) -> Result<usize> {
+        let path = format!("/inode{:010}", inode);
+        let data = self.client.get_data(&path).await?;
+        let Some((data, _)) = data else {
+            return Err(anyhow::anyhow!("Failed to get inode data from zookeeper"));
+        };
+        // split by comma and get the second element
+        let data = String::from_utf8(data)?;
+        let name = data.split(",").nth(0).unwrap();
+        let new_data: Cow<'static, [u8]> = Cow::Owned(format!("{},{}", name, size).as_bytes().to_vec());
+        self.client.set_data(&path, None, new_data).await??;
+        Ok(size)
     }
 
     /// Send hearbeats to the zookeeper to maintain 'leases' on the session

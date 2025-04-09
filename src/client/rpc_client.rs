@@ -72,6 +72,7 @@ impl RpcClient {
             remote_addr: unsafe { (*self.buffer.mr).addr } as u64,
             rkey: self.buffer.rkey().key,
             version: 0, // This is only for the servers to use, client should always set to 0
+            size: data.len(),
         });
         let request_bytes = serde_json::to_vec(&put_request)?;
         self.stream.write_all(&request_bytes).await?;
@@ -90,13 +91,12 @@ impl RpcClient {
         &mut self,
         file_id: u64,
         chunk_id: u64,
-    ) -> Result<()> {
+        size: usize,
+    ) -> Result<Vec<u8>> {
         println!(
             "Sending GetRequest to {}",
             format!("{}:{}", self.server_name, SERVER_PORT)
         );
-        // Clear the buffer
-        self.buffer[..CHUNK_SIZE].fill(0);
 
         let get_request = RpcMessage::GetRequest(GetInfo {
             client_name: self.local_addr.clone(),
@@ -104,6 +104,7 @@ impl RpcClient {
             chunk_id,
             remote_addr: unsafe { (*self.buffer.mr).addr } as u64,
             rkey: self.buffer.rkey().key,
+            size,
         });
         let request_bytes = serde_json::to_vec(&get_request)?;
         self.stream.write_all(&request_bytes).await?;
@@ -116,7 +117,7 @@ impl RpcClient {
         println!("Data in buffer: {:?}", self.buffer[..15].to_vec());
 
         match response {
-            RpcMessage::Response(_) => Ok(()),
+            RpcMessage::Response(_) => Ok(self.buffer[..size].to_vec()),
             _ => Err(anyhow::anyhow!("Unexpected response type")),
         }
     }
