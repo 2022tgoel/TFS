@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, timeout};
+use tracing::{Level, span};
 
 pub const SERVER_PORT: u16 = 7777;
 const NUM_BUFFERS: usize = 16; // Number of requests that can be simultaneously handled
@@ -114,7 +115,6 @@ impl RpcServer {
             let completions_manager = self.completions_manager.clone();
             let chunk_version_table = self.chunk_version_table.clone();
             let zookeeper = self.zookeeper.clone();
-
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
                     socket,
@@ -152,6 +152,10 @@ impl RpcServer {
                 break;
             }
             let n = n?;
+            if n == 0 {
+                eprintln!("Client disconnected");
+                break;
+            }
             let msg: RpcMessage = serde_json::from_slice(&buf[..n])?;
             match msg {
                 RpcMessage::CreateQueuePair(qp_info) => {
@@ -273,7 +277,11 @@ impl RpcServer {
                     file.write_all(&buffer[..put_info.size]).await?;
                     // If tail, update the size of the file in zookeeper
                     if is_tail {
-                        zookeeper.lock().await.update_size(put_info.file_id, put_info.size).await?;
+                        zookeeper
+                            .lock()
+                            .await
+                            .update_size(put_info.file_id, put_info.size)
+                            .await?;
                     }
                     if let State::Aborted = chunk_version_table.commit_version(
                         put_info.file_id,
@@ -290,59 +298,73 @@ impl RpcServer {
                     if let Some(version) =
                         chunk_version_table.get_version(get_info.file_id, get_info.chunk_id)
                     {
-                        let file_path = format!(
-                            "/scratch/files/{}_{}_{}.txt",
-                            get_info.file_id, get_info.chunk_id, version
-                        );
-                        // Check if the file exists
-                        if !std::path::Path::new(&file_path).exists() {
-                            eprintln!("File {} does not exist", file_path);
-                        }
-                        let mut file = File::open(file_path.clone()).await?;
-                        // Read the chunk into a buffer
-                        let mut buffer;
-                        'outer: loop {
-                            for i in 0..NUM_BUFFERS {
-                                let buffer_tmp = buffers[i].try_lock();
-                                match buffer_tmp {
-                                    Ok(buffer_tmp) => {
-                                        buffer = buffer_tmp;
-                                        break 'outer;
-                                    }
-                                    Err(_) => {
-                                        std::thread::yield_now();
-                                        continue;
+                        {
+                            let get_span = span!(Level::INFO, "get_request");
+                            let _get_guard = get_span.enter();
+
+                            let file_path = format!(
+                                "/scratch/files/{}_{}_{}.txt",
+                                get_info.file_id, get_info.chunk_id, version
+                            );
+                            if !std::path::Path::new(&file_path).exists() {
+                                eprintln!("File {} does not exist", file_path);
+                            }
+                            let span = span!(Level::INFO, "open_file");
+                            let _guard = span.enter();
+                            let mut file = File::open(file_path.clone()).await?;
+
+                            let mut buffer;
+                            {
+                                'outer: loop {
+                                    for i in 0..NUM_BUFFERS {
+                                        let buffer_tmp = buffers[i].try_lock();
+                                        match buffer_tmp {
+                                            Ok(buffer_tmp) => {
+                                                buffer = buffer_tmp;
+                                                break 'outer;
+                                            }
+                                            Err(_) => {
+                                                std::thread::yield_now();
+                                                continue;
+                                            }
+                                        }
                                     }
                                 }
                             }
+                            let read_span = span!(Level::INFO, "file_read");
+                            let _read_guard = read_span.enter();
+                            file.read(&mut buffer[..get_info.size]).await?;
+                            let rdma_span = span!(Level::INFO, "issue_rdma_write");
+                            let _rdma_guard = rdma_span.enter();
+                            let mut ib = ib_socket.lock().await;
+                            let wr_id = ib.rdma_write(
+                                &get_info.client_name,
+                                &mut buffer,
+                                get_info.remote_addr,
+                                get_info.rkey,
+                                get_info.size,
+                            )?;
+                            drop(ib);
+
+                            let (tx, mut rx) = mpsc::channel(1);
+
+                            completions_manager
+                                .lock()
+                                .await
+                                .submit_request(PendingCompletion { wr_id, channel: tx });
+
+                            let _resp = rx
+                                .recv()
+                                .await
+                                .ok_or(anyhow::anyhow!("Error receiving from mpsc channel"))?;
                         }
-                        file.read(&mut buffer[..get_info.size]).await?;
-                        // Issue an rdma write
-                        let mut ib = ib_socket.lock().await;
-                        let wr_id = ib.rdma_write(
-                            &get_info.client_name,
-                            &mut buffer,
-                            get_info.remote_addr,
-                            get_info.rkey,
-                            get_info.size,
-                        )?;
-                        drop(ib);
+                        {
+                            let response_span = span!(Level::INFO, "send_response");
+                            let _response_guard = response_span.enter();
 
-                        let (tx, mut rx) = mpsc::channel(1);
-
-                        // Inform the completions queue manager of this event
-                        completions_manager
-                            .lock()
-                            .await
-                            .submit_request(PendingCompletion { wr_id, channel: tx });
-                        // Wait for the completion of the request
-                        let _resp = rx
-                            .recv()
-                            .await
-                            .ok_or(anyhow::anyhow!("Error receiving from mpsc channel"))?;
-                        println!("Received GetRequest completion for wr_id {}", wr_id);
-                        let resp = RpcMessage::Response(Status::Success);
-                        socket.write_all(&serde_json::to_vec(&resp)?).await?;
+                            let resp = RpcMessage::Response(Status::Success);
+                            socket.write_all(&serde_json::to_vec(&resp)?).await?;
+                        }
                     } else {
                         let resp = RpcMessage::Response(Status::StaleData);
                         socket.write_all(&serde_json::to_vec(&resp)?).await?;

@@ -104,7 +104,13 @@ impl RpcSocket {
                 println!("Time taken to register memory: {:?}", duration);
                 // Perform RDMA read using the provided memory region info
                 let start = Instant::now();
-                let id = ib.rdma_read(&remote_addr, &mut buffer, region.addr, region.rkey, region.length)?;
+                let id = ib.rdma_read(
+                    &remote_addr,
+                    &mut buffer,
+                    region.addr,
+                    region.rkey,
+                    region.length,
+                )?;
                 ib.get_completion(id)?;
                 let duration = start.elapsed();
                 println!("Time taken to read: {:?}", duration);

@@ -166,12 +166,12 @@ impl Filesystem for TFS {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        fh: u64,
+        _fh: u64,
         offset: i64,
         data: &[u8],
-        write_flags: u32,
-        flags: i32,
-        lock_owner: Option<u64>,
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
         info!("write() called with {:?} size={:?}", ino, data.len());
@@ -314,8 +314,8 @@ impl Filesystem for TFS {
         parent: u64,
         name: &OsStr,
         mode: u32,
-        umask: u32,
-        rdev: u32,
+        _umask: u32,
+        _rdev: u32,
         reply: ReplyEntry,
     ) {
         let file_type = mode & libc::S_IFMT as u32;

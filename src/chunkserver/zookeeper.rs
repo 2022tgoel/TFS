@@ -136,15 +136,21 @@ impl ZookeeperClient {
     pub async fn update_size(&self, inode: u64, size: usize) -> Result<usize> {
         let path = format!("/inode{:010}", inode);
         let data = self.client.get_data(&path).await?;
-        let Some((data, _)) = data else {
-            return Err(anyhow::anyhow!("Failed to get inode data from zookeeper"));
-        };
-        // split by comma and get the second element
-        let data = String::from_utf8(data)?;
-        let name = data.split(",").nth(0).unwrap();
-        let new_data: Cow<'static, [u8]> = Cow::Owned(format!("{},{}", name, size).as_bytes().to_vec());
-        self.client.set_data(&path, None, new_data).await??;
-        Ok(size)
+        if let Some((data, _)) = data {
+            // split by comma and get the second element
+            let data = String::from_utf8(data)?;
+            let name = data.split(",").nth(0).unwrap();
+            let new_data: Cow<'static, [u8]> =
+                Cow::Owned(format!("{},{}", name, size).as_bytes().to_vec());
+            self.client.set_data(&path, None, new_data).await??;
+            Ok(size)
+        } else {
+            // This file was created without the fuse client, by writing chunks directly
+            // Therefore, we don't need to worry about filenames
+            // let new_data: Cow<'static, [u8]> = Cow::Owned(format!(",{}", size).as_bytes().to_vec());
+            // self.client.set_data(&path, None, new_data).await??;
+            Ok(0)
+        }
     }
 
     /// Send hearbeats to the zookeeper to maintain 'leases' on the session

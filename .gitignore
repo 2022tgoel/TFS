@@ -1,3 +1,5 @@
 /target
 slurm-*
 fuse_test
+*.pftrace
+*.json
