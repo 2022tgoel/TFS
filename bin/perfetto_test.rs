@@ -2,7 +2,7 @@ use futures::future::join_all;
 use tokio::time::{Duration, sleep};
 use tracing::{Instrument, Level, event, info, info_span, instrument, span};
 use tracing_perfetto::PerfettoLayer;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 async fn function() {
     let span = span!(Level::INFO, "my_block", some_field = 42);

@@ -6,7 +6,6 @@ use fuser::{
 };
 use libc::ENOENT;
 use log::{debug, info, warn};
-use std::env;
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

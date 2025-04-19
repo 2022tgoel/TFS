@@ -56,6 +56,9 @@ impl IBSocket {
             .create_qp(self.cq, self.cq, ibv_qp_type::IBV_QPT_RC)?
             .set_gid_index(0) // Used to determine the routing domain
             .allow_remote_rw()
+            .set_max_send_wr(100)
+            .set_max_recv_wr(100)
+            .set_path_mtu(5) // 4096 KB
             .build()?;
 
         // Send the endpoint information
@@ -158,7 +161,7 @@ impl IBSocket {
                 )
             };
             if errno != 0 {
-                return Err(anyhow::anyhow!(format!("RDMA read failed: {}", errno)));
+                return Err(anyhow::anyhow!(format!("RDMA op failed: {}", errno)));
             }
         } else {
             return Err(anyhow::anyhow!("No queue pair for rdma read"));

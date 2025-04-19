@@ -12,7 +12,7 @@ use tokio::time::{Duration, timeout};
 use tracing::{Level, span};
 
 pub const SERVER_PORT: u16 = 7777;
-const NUM_BUFFERS: usize = 16; // Number of requests that can be simultaneously handled
+const NUM_BUFFERS: usize = 100; // Number of requests that can be simultaneously handled
 pub const CHUNK_SIZE: usize = 64000; // 64KB chunk size
 const RPC_TIMEOUT: Duration = Duration::from_secs(15); // How long to wait for an RPC response before assuming server failure
 
@@ -148,12 +148,10 @@ impl RpcServer {
             // Handle requests synchronously until the client disconnects
             let n = socket.read(&mut buf).await;
             if n.is_err() {
-                eprintln!("Client disconnected");
                 break;
             }
             let n = n?;
             if n == 0 {
-                eprintln!("Client disconnected");
                 break;
             }
             let msg: RpcMessage = serde_json::from_slice(&buf[..n])?;

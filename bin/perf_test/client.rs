@@ -1,7 +1,9 @@
+use futures::future::join_all;
 use std::env;
 use std::time::Instant;
 use tfs::client::RpcClient;
 use tfs::net::utils::my_name;
+
 #[tokio::main]
 async fn main() {
     let hostname = my_name().unwrap();
@@ -29,13 +31,18 @@ async fn main() {
         Err(e) => println!("PutRequest failed: {:?}", e),
     }
 
-    // Send GetRequest
+    // Send 10 concurrent GetRequests
     let start = Instant::now();
-    let result = client.send_get_request(1, 1, test_data.len()).await;
+    let handles = (0..200)
+        .map(|_| {
+            let client = client.clone();
+            tokio::spawn(async move {
+                let test_data = vec![0; 64000];
+                let result = client.send_get_request(1, 1, test_data.len()).await;
+            })
+        })
+        .collect::<Vec<_>>();
+    join_all(handles).await;
     let duration = start.elapsed();
     println!("Time taken: {:?}", duration);
-    match result {
-        Ok(_) => println!("GetRequest successful!"),
-        Err(e) => println!("GetRequest failed: {:?}", e),
-    }
 }

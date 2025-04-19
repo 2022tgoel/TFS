@@ -1,11 +1,11 @@
 use tfs::chunkserver::RpcServer;
 use tfs::net::utils::my_name;
 use tokio::signal;
+use tracing_chrome::ChromeLayerBuilder;
+use tracing_flame::FlameLayer;
 use tracing_log::LogTracer;
 use tracing_perfetto::PerfettoLayer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
-use tracing_flame::FlameLayer;
-use tracing_chrome::ChromeLayerBuilder;
 
 #[tokio::main]
 async fn main() {
