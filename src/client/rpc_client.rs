@@ -4,12 +4,12 @@ use anyhow::Result;
 use bb8::Pool;
 use ibverbs::MemoryRegion;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 const NUM_BUFFERS: usize = 100; // Number of requests that can be simultaneously handled
-const NUM_CONNS: u32 = 50; // Number of connections to keep open
+const NUM_CONNS: u32 = 100; // Number of connections to keep open
 
 #[derive(Clone)]
 pub struct RpcClient {
@@ -86,7 +86,7 @@ impl RpcClient {
                         break 'outer;
                     }
                     Err(_) => {
-                        std::thread::yield_now();
+                        tokio::time::sleep(Duration::from_micros(1)).await;
                         continue;
                     }
                 }
@@ -141,7 +141,7 @@ impl RpcClient {
                         break 'outer;
                     }
                     Err(_) => {
-                        std::thread::yield_now();
+                        tokio::time::sleep(Duration::from_micros(1)).await;
                         continue;
                     }
                 }

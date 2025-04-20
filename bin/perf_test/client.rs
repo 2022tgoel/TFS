@@ -1,6 +1,7 @@
 use futures::future::join_all;
 use std::env;
 use std::time::Instant;
+use tfs::chunkserver::CHUNK_SIZE;
 use tfs::client::RpcClient;
 use tfs::net::utils::my_name;
 
@@ -15,7 +16,7 @@ async fn main() {
         .unwrap();
 
     // Prepare test data
-    let test_data: Vec<u8> = vec![65; 64000];
+    let test_data: Vec<u8> = vec![65; CHUNK_SIZE];
 
     client.connect_ib().await.unwrap();
     println!("Sending PutRequest...");
@@ -31,13 +32,15 @@ async fn main() {
         Err(e) => println!("PutRequest failed: {:?}", e),
     }
 
-    // Send 10 concurrent GetRequests
+    // Send 1000 concurrent GetRequests
+    // Each reads 10MB of data
+    // Total data read = 10GB
     let start = Instant::now();
-    let handles = (0..200)
+    let handles = (0..1000)
         .map(|_| {
             let client = client.clone();
             tokio::spawn(async move {
-                let test_data = vec![0; 64000];
+                let test_data = vec![0; CHUNK_SIZE];
                 let result = client.send_get_request(1, 1, test_data.len()).await;
             })
         })

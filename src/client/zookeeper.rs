@@ -48,7 +48,7 @@ impl ZookeeperClient {
             .create(
                 &format!("/files/{}", name),
                 b"",
-                Acl::open_unsafe().clone(),
+                Acl::open_unsafe(),
                 CreateMode::Persistent,
             )
             .create(

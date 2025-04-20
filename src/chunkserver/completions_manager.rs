@@ -60,7 +60,7 @@ impl CompletionsManager {
                                 requests.remove(&wr_id);
                                 break;
                             }
-                            std::thread::yield_now();
+                            tokio::time::sleep(Duration::from_micros(1)).await;
                         }
                     }
                 }

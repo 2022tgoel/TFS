@@ -4,6 +4,7 @@ use anyhow::Result;
 use ibverbs::MemoryRegion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -13,7 +14,7 @@ use tracing::{Level, span};
 
 pub const SERVER_PORT: u16 = 7777;
 const NUM_BUFFERS: usize = 100; // Number of requests that can be simultaneously handled
-pub const CHUNK_SIZE: usize = 64000; // 64KB chunk size
+pub const CHUNK_SIZE: usize = 10000000; // 10MB chunk size
 const RPC_TIMEOUT: Duration = Duration::from_secs(15); // How long to wait for an RPC response before assuming server failure
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,6 +65,7 @@ pub struct RpcServer {
     buffers: Vec<Arc<Mutex<MemoryRegion<u8>>>>,
     chunk_version_table: Arc<ChunkVersionTable>,
     zookeeper: Arc<Mutex<ZookeeperClient>>,
+    request_id: AtomicU64,
 }
 
 impl RpcServer {
@@ -102,6 +104,7 @@ impl RpcServer {
             buffers,
             chunk_version_table: Arc::new(ChunkVersionTable::new()),
             zookeeper: Arc::new(Mutex::new(zookeeper)),
+            request_id: AtomicU64::new(0),
         })
     }
 
@@ -115,6 +118,7 @@ impl RpcServer {
             let completions_manager = self.completions_manager.clone();
             let chunk_version_table = self.chunk_version_table.clone();
             let zookeeper = self.zookeeper.clone();
+            let request_id = self.request_id.fetch_add(1, Ordering::SeqCst);
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
                     socket,
@@ -124,6 +128,7 @@ impl RpcServer {
                     completions_manager,
                     chunk_version_table,
                     zookeeper,
+                    request_id,
                 )
                 .await
                 {
@@ -142,6 +147,7 @@ impl RpcServer {
         completions_manager: Arc<Mutex<CompletionsManager>>,
         chunk_version_table: Arc<ChunkVersionTable>,
         zookeeper: Arc<Mutex<ZookeeperClient>>,
+        request_id: u64,
     ) -> Result<()> {
         let mut buf = vec![0; 1024];
         while let Ok(_) = socket.peer_addr() {
@@ -185,7 +191,7 @@ impl RpcServer {
                                     break 'outer;
                                 }
                                 Err(_) => {
-                                    std::thread::yield_now();
+                                    tokio::time::sleep(Duration::from_micros(1)).await;
                                     continue;
                                 }
                             }
