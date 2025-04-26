@@ -5,12 +5,12 @@ use fuser::{
     ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
 use libc::ENOENT;
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tfs::client::{RpcClient, ZookeeperClient};
-use tfs::net::utils::my_name;
+use tfs::net::{HostName, TokioTcpConnectionManager, my_name};
 use tokio::runtime::Runtime;
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
@@ -57,8 +57,8 @@ macro_rules! create_attr {
 struct TFS {
     rt: Runtime,
     next_file_handle: AtomicU64,
-    read_rpc_client: Option<RpcClient>, // The read client will be different, to distribute the load
-    write_rpc_client: RpcClient,        // The write client will always be the head of the chain
+    read_rpc_client: Option<RpcClient<TokioTcpConnectionManager>>, // The read client will be different, to distribute the load
+    write_rpc_client: RpcClient<TokioTcpConnectionManager>, // The write client will always be the head of the chain
     zookeeper_client: ZookeeperClient,
 }
 
@@ -69,9 +69,12 @@ impl TFS {
             info!("Creating RPC client");
             let mut read_rpc_client = if read_hostname != write_hostname {
                 Some(
-                    RpcClient::new(my_name().unwrap(), read_hostname.to_string())
-                        .await
-                        .unwrap(),
+                    RpcClient::new(
+                        HostName::RegularName(my_name().unwrap()),
+                        read_hostname.to_string(),
+                    )
+                    .await
+                    .unwrap(),
                 )
             } else {
                 None
@@ -79,10 +82,12 @@ impl TFS {
             if let Some(read_rpc_client) = &mut read_rpc_client {
                 read_rpc_client.connect_ib().await.unwrap();
             }
-            let mut write_rpc_client =
-                RpcClient::new(my_name().unwrap(), write_hostname.to_string())
-                    .await
-                    .unwrap();
+            let mut write_rpc_client = RpcClient::new(
+                HostName::RegularName(my_name().unwrap()),
+                write_hostname.to_string(),
+            )
+            .await
+            .unwrap();
             write_rpc_client.connect_ib().await.unwrap();
             info!("Creating Zookeeper client");
             // Distribute the zookeeper load by using the read hostname
@@ -274,7 +279,7 @@ impl Filesystem for TFS {
 
     fn setattr(
         &mut self,
-        req: &Request,
+        _req: &Request,
         inode: u64,
         _mode: Option<u32>,
         _uid: Option<u32>,
@@ -357,7 +362,7 @@ impl Filesystem for TFS {
         reply.entry(&Duration::new(0, 0), &create_attr!(inode, 0), 0);
     }
 
-    fn open(&mut self, req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
+    fn open(&mut self, _req: &Request, inode: u64, flags: i32, reply: ReplyOpen) {
         info!("open() called for {:?}", inode);
         match flags & libc::O_ACCMODE {
             libc::O_RDONLY => {

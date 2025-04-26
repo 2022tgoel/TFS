@@ -1,0 +1,1 @@
+SLURM_NODELIST=`hostname` ./zookeeper/launch.py stop && SLURM_NODELIST=`hostname` ./zookeeper/launch.py start && sleep 1 && SLURM_NODELIST=`hostname` ./zookeeper/launch.py status && cargo test --test chunkserver_test

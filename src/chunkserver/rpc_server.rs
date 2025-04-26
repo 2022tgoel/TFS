@@ -1,8 +1,11 @@
 use super::{ChunkVersionTable, CompletionsManager, PendingCompletion, State, ZookeeperClient};
-use crate::net::IBSocket;
+use crate::net::{HostName, IBSocket, Listener, ManagerCreate, NUM_CONNS, create_tcp_pool};
 use anyhow::Result;
+use bb8::{ManageConnection, Pool};
 use ibverbs::MemoryRegion;
 use serde::{Deserialize, Serialize};
+use std::io;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::fs::File;
@@ -10,12 +13,23 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, timeout};
-use tracing::{Level, span};
+use tracing::{Level, info, span};
 
 pub const SERVER_PORT: u16 = 7777;
-const NUM_BUFFERS: usize = 100; // Number of requests that can be simultaneously handled
-pub const CHUNK_SIZE: usize = 10000000; // 10MB chunk size
 const RPC_TIMEOUT: Duration = Duration::from_secs(15); // How long to wait for an RPC response before assuming server failure
+
+// For testing, we need to limit the number of buffers, since
+// the servers and clients are sharing the same physical hardware
+// Reduces startup time.
+#[cfg(test)]
+const NUM_BUFFERS: usize = 5;
+#[cfg(test)]
+pub const CHUNK_SIZE: usize = 1000;
+
+#[cfg(not(test))]
+const NUM_BUFFERS: usize = 100;
+#[cfg(not(test))]
+pub const CHUNK_SIZE: usize = 10000000; // 10MB chunk size
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QPInfo {
@@ -58,24 +72,40 @@ pub enum RpcMessage {
     Response(Status),
 }
 
-pub struct RpcServer {
-    local_addr: String,
-    ib_socket: Arc<Mutex<IBSocket>>,
+pub struct PeerServer<TcpConnectionManager>
+where
+    TcpConnectionManager: ManagerCreate + ManageConnection<Error = io::Error> + Clone,
+{
+    name: String,
+    pool: Pool<TcpConnectionManager>,
+}
+
+pub struct RpcServer<TcpConnectionManager>
+where
+    TcpConnectionManager: ManagerCreate + ManageConnection<Error = io::Error> + Clone,
+{
+    local_addr: HostName,
+    ib_socket: Arc<Mutex<IBSocket<TcpConnectionManager::Listener>>>,
     completions_manager: Arc<Mutex<CompletionsManager>>,
     buffers: Vec<Arc<Mutex<MemoryRegion<u8>>>>,
     chunk_version_table: Arc<ChunkVersionTable>,
     zookeeper: Arc<Mutex<ZookeeperClient>>,
+    peer: Arc<Mutex<Option<PeerServer<TcpConnectionManager>>>>,
     request_id: AtomicU64,
 }
 
-impl RpcServer {
-    pub async fn new(local_addr: String) -> Result<Self> {
+impl<TcpConnectionManager> RpcServer<TcpConnectionManager>
+where
+    TcpConnectionManager: ManagerCreate + ManageConnection<Error = io::Error> + Clone,
+    TcpConnectionManager::Connection: AsyncReadExt + AsyncWriteExt + Unpin,
+{
+    pub async fn new(local_addr: HostName) -> Result<Self> {
         // make /scratch/files if it doesn't exist
         if !std::path::Path::new("/scratch/files").exists() {
             std::fs::create_dir_all("/scratch/files")?;
         }
 
-        let ib_socket = IBSocket::new()?;
+        let ib_socket = IBSocket::<TcpConnectionManager::Listener>::new()?;
         let buffers = (0..NUM_BUFFERS)
             .map(|_| {
                 ib_socket
@@ -91,11 +121,13 @@ impl RpcServer {
             CompletionsManager::manage_completions(ib_socket_clone, map_view).await
         });
         // Create a ring of memory regions to read data from the client
-        let zookeeper = ZookeeperClient::new().await?;
+        let zookeeper = ZookeeperClient::new(local_addr.get_name().to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create zookeeper client: {}", e))?;
 
         let (is_head, _) = zookeeper.get_chain_info().await?;
         if is_head {
-            println!("{} is the head of the chain", local_addr);
+            tracing::info!("{} is the head of the chain", local_addr.get_name());
         }
         Ok(Self {
             local_addr,
@@ -104,12 +136,23 @@ impl RpcServer {
             buffers,
             chunk_version_table: Arc::new(ChunkVersionTable::new()),
             zookeeper: Arc::new(Mutex::new(zookeeper)),
+            peer: Arc::new(Mutex::new(None)),
             request_id: AtomicU64::new(0),
         })
     }
 
     pub async fn serve(&self) -> Result<()> {
-        let listener = TcpListener::bind(format!("{}:{}", self.local_addr, SERVER_PORT)).await?;
+        let listener = if self.local_addr.is_turmoil() {
+            TcpConnectionManager::Listener::bind((IpAddr::from(Ipv4Addr::UNSPECIFIED), SERVER_PORT))
+                .await?
+        } else {
+            TcpConnectionManager::Listener::bind(format!(
+                "{}:{}",
+                self.local_addr.get_name(),
+                SERVER_PORT
+            ))
+            .await?
+        };
         println!("RPC server listening on port {}", SERVER_PORT);
         while let Ok((socket, _)) = listener.accept().await {
             let local_addr = self.local_addr.clone();
@@ -118,6 +161,7 @@ impl RpcServer {
             let completions_manager = self.completions_manager.clone();
             let chunk_version_table = self.chunk_version_table.clone();
             let zookeeper = self.zookeeper.clone();
+            let peer = self.peer.clone();
             let request_id = self.request_id.fetch_add(1, Ordering::SeqCst);
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
@@ -128,6 +172,7 @@ impl RpcServer {
                     completions_manager,
                     chunk_version_table,
                     zookeeper,
+                    peer,
                     request_id,
                 )
                 .await
@@ -140,17 +185,18 @@ impl RpcServer {
     }
 
     async fn handle_connection(
-        mut socket: TcpStream,
-        ib_socket: Arc<Mutex<IBSocket>>,
-        local_addr: String,
+        mut socket: <TcpConnectionManager::Listener as Listener>::Stream,
+        ib_socket: Arc<Mutex<IBSocket<TcpConnectionManager::Listener>>>,
+        local_addr: HostName,
         buffers: Vec<Arc<Mutex<MemoryRegion<u8>>>>,
         completions_manager: Arc<Mutex<CompletionsManager>>,
         chunk_version_table: Arc<ChunkVersionTable>,
         zookeeper: Arc<Mutex<ZookeeperClient>>,
-        request_id: u64,
+        peer: Arc<Mutex<Option<PeerServer<TcpConnectionManager>>>>,
+        _request_id: u64,
     ) -> Result<()> {
         let mut buf = vec![0; 1024];
-        while let Ok(_) = socket.peer_addr() {
+        loop {
             // Handle requests synchronously until the client disconnects
             let n = socket.read(&mut buf).await;
             if n.is_err() {
@@ -163,20 +209,33 @@ impl RpcServer {
             let msg: RpcMessage = serde_json::from_slice(&buf[..n])?;
             match msg {
                 RpcMessage::CreateQueuePair(qp_info) => {
-                    println!("Received CreateQueuePair from {}", qp_info.addr);
+                    info!("Received CreateQueuePair from {}", qp_info.addr);
                     let mut ib = ib_socket.lock().await;
                     ib.connect(local_addr.clone(), qp_info.addr).await?;
                     let resp = RpcMessage::Response(Status::Success);
                     socket.write_all(&serde_json::to_vec(&resp)?).await?;
                 }
                 RpcMessage::PutRequest(put_info) => {
-                    println!("Received PutRequest from {}", put_info.client_name);
                     // Query zookeeper for chain information
                     let (is_head, next_node) = zookeeper.lock().await.get_chain_info().await?;
                     let is_tail = next_node.is_none();
+                    println!(
+                        "Received PutRequest from {} is_head: {}, next_node: {:?}",
+                        put_info.client_name, is_head, next_node
+                    );
                     let version = if is_head {
                         chunk_version_table.get_new_version(put_info.file_id, put_info.chunk_id)
                     } else {
+                        if let Err(e) = chunk_version_table.insert_version(
+                            put_info.file_id,
+                            put_info.chunk_id,
+                            put_info.version,
+                        ) {
+                            println!("Insertion failed: {}", e);
+                            let resp = RpcMessage::Response(Status::StaleData);
+                            socket.write_all(&serde_json::to_vec(&resp)?).await?;
+                            continue;
+                        }
                         put_info.version
                     };
                     println!("Will forward to {:?}", next_node);
@@ -229,11 +288,25 @@ impl RpcServer {
 
                     // Forward the request to the next node in the chain
                     if let Some(next_node) = next_node {
-                        let mut next_socket =
-                            TcpStream::connect(format!("{}:{}", next_node, SERVER_PORT)).await?;
+                        let mut peer = peer.lock().await;
+                        if peer.is_none() || peer.as_ref().unwrap().name != next_node {
+                            // The peer changed. Create a new TCP pool.
+                            *peer = Some(PeerServer {
+                                name: next_node.clone(),
+                                pool: create_tcp_pool::<TcpConnectionManager>(
+                                    next_node.clone(),
+                                    SERVER_PORT,
+                                    NUM_CONNS,
+                                )
+                                .await?,
+                            });
+                        }
+                        let pool = peer.as_ref().unwrap().pool.clone();
+                        let mut next_socket = pool.get().await?;
+                        drop(peer);
                         if must_connect {
                             let resp = RpcMessage::CreateQueuePair(QPInfo {
-                                addr: local_addr.clone(),
+                                addr: local_addr.clone().get_name().to_string(),
                             });
                             println!("Sending CreateQueuePair to {}", next_node);
                             next_socket.write_all(&serde_json::to_vec(&resp)?).await?;
@@ -246,7 +319,7 @@ impl RpcServer {
                             println!("Received CreateQueuePair response from {}", next_node);
                         }
                         let resp = RpcMessage::PutRequest(PutInfo {
-                            client_name: local_addr.clone(),
+                            client_name: local_addr.clone().get_name().to_string(),
                             file_id: put_info.file_id,
                             chunk_id: put_info.chunk_id,
                             remote_addr: unsafe { (*buffer.mr).addr } as u64,
@@ -266,7 +339,13 @@ impl RpcServer {
                             })??;
                         let msg: RpcMessage = serde_json::from_slice(&buf[..n])?;
                         match msg {
-                            RpcMessage::Response(_) => {}
+                            RpcMessage::Response(Status::Success) => {}
+                            RpcMessage::Response(Status::StaleData) => {
+                                let resp = RpcMessage::Response(Status::StaleData);
+                                println!("Sending StaleData to {}", local_addr.get_name());
+                                socket.write_all(&serde_json::to_vec(&resp)?).await?;
+                                continue;
+                            }
                             _ => {
                                 eprintln!("Error forwarding request to next node");
                             }

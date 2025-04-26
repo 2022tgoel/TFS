@@ -4,6 +4,7 @@ use std::time::Instant;
 use tfs::chunkserver::CHUNK_SIZE;
 use tfs::client::RpcClient;
 use tfs::net::utils::my_name;
+use tfs::net::{HostName, TokioTcpConnectionManager};
 
 #[tokio::main]
 async fn main() {
@@ -11,9 +12,12 @@ async fn main() {
     let peer = env::var("PEER_HOSTNAME").expect("PEER_HOSTNAME is not set");
 
     // Create RPC client
-    let mut client = RpcClient::new(hostname.clone(), peer.clone())
-        .await
-        .unwrap();
+    let mut client = RpcClient::<TokioTcpConnectionManager>::new(
+        HostName::RegularName(hostname.clone()),
+        peer.clone(),
+    )
+    .await
+    .unwrap();
 
     // Prepare test data
     let test_data: Vec<u8> = vec![65; CHUNK_SIZE];

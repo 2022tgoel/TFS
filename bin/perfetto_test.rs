@@ -1,6 +1,6 @@
 use futures::future::join_all;
 use tokio::time::{Duration, sleep};
-use tracing::{Instrument, Level, event, info, info_span, instrument, span};
+use tracing::{Instrument, Level, event, info, info_span, span};
 use tracing_perfetto::PerfettoLayer;
 use tracing_subscriber::{EnvFilter, prelude::*};
 

@@ -1,3 +1,5 @@
+use crate::net::tcp::ConnectStream;
+use crate::net::tcp::Listener;
 use anyhow::Result;
 use ibverbs::{
     CompletionQueue, Context as IbContext, MemoryRegion, ProtectionDomain, QueuePair,
@@ -6,25 +8,50 @@ use ibverbs::{
 use ibverbs_sys::*;
 use serde_json;
 use std::collections::HashMap;
+use std::io;
+use std::marker::PhantomData;
 use std::ptr;
-use zeromq::{Socket, SocketRecv, SocketSend};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const ZMQ_SERVER_PORT: u16 = 5555;
+// Turmoil doesn't support binding to a specific IP address
+// https://github.com/tokio-rs/turmoil/blob/4098729305f7ba31131f8dde957443408c3ca306/src/net/tcp/listener.rs#L36
+// So we need to bind to 0.0.0.0, and this enum helps us identify
+// whether the host name is a turmoil name or a regular name
+#[derive(Debug, Clone)]
+pub enum HostName {
+    TurmoilName(String),
+    RegularName(String),
+}
+
+impl HostName {
+    pub fn get_name(&self) -> &str {
+        match self {
+            HostName::TurmoilName(name) => name,
+            HostName::RegularName(name) => name,
+        }
+    }
+    pub fn is_turmoil(&self) -> bool {
+        matches!(self, HostName::TurmoilName(_))
+    }
+}
+
+const IB_SERVER_PORT: u16 = 5555;
 pub const MIN_WR_ID: u64 = 1000;
 
 /// Represents an InfiniBand socket for RDMA communication
 /// This socket can handle multiple remote connections
 /// by creating multiple queue pairs
-pub struct IBSocket {
+pub struct IBSocket<L: Listener> {
     context: &'static IbContext,
     pd: &'static ProtectionDomain<'static>,
     cq: &'static CompletionQueue<'static>,
     qps: HashMap<String, QueuePair<'static>>,
     id: u64,
+    _listener: PhantomData<L>,
 }
 
-impl IBSocket {
-    /// Creates a new InfiniBand socket
+impl<L: Listener> IBSocket<L> {
+    /// Creates a new InfiniBand socket and binds a TCP server
     pub fn new() -> Result<Self> {
         let context = Box::new(
             ibverbs::devices()?
@@ -41,6 +68,7 @@ impl IBSocket {
             cq: Box::leak(cq),
             qps: HashMap::new(),
             id: MIN_WR_ID,
+            _listener: PhantomData,
         })
     }
 
@@ -48,8 +76,30 @@ impl IBSocket {
         self.qps.contains_key(remote_addr)
     }
 
-    /// Connects to a remote node
-    pub async fn connect(&mut self, local_node: String, remote_node: String) -> Result<()> {
+    /// Helper: send a JSON-serializable message over a TCP stream
+    async fn send_json<S: AsyncWriteExt + Unpin, T: serde::Serialize>(
+        stream: &mut S,
+        msg: &T,
+    ) -> Result<()> {
+        let data = serde_json::to_vec(msg)?;
+        let len = data.len() as u32;
+        stream.write_u32_le(len).await?;
+        stream.write_all(&data).await?;
+        Ok(())
+    }
+
+    /// Helper: receive a JSON message from a TCP stream
+    async fn recv_json<S: AsyncReadExt + Unpin, T: serde::de::DeserializeOwned>(
+        stream: &mut S,
+    ) -> Result<T> {
+        let len = stream.read_u32_le().await?;
+        let mut buf = vec![0u8; len as usize];
+        stream.read_exact(&mut buf).await?;
+        Ok(serde_json::from_slice(&buf)?)
+    }
+
+    /// Connects to a remote node using TCP for handshake
+    pub async fn connect(&mut self, local_node: HostName, remote_node: String) -> Result<()> {
         // Create the queue pair
         let prepared_qp = self
             .pd
@@ -61,28 +111,59 @@ impl IBSocket {
             .set_path_mtu(5) // 4096 KB
             .build()?;
 
-        // Send the endpoint information
-        let mut zmq_server_socket = zeromq::RepSocket::new();
-        let local_addr = format!("tcp://{}:{}", local_node, ZMQ_SERVER_PORT);
-        zmq_server_socket.bind(&local_addr).await?;
+        // Accept a connection from the remote node (server side)
+        let listener = if local_node.is_turmoil() {
+            L::bind(format!("0.0.0.0:{}", IB_SERVER_PORT)).await?
+        } else {
+            L::bind(format!("{}:{}", local_node.get_name(), IB_SERVER_PORT)).await?
+        };
+        let (mut client_stream, mut server_stream) = if *local_node.get_name() > *remote_node {
+            let (mut server_stream, _peer_addr) = listener.accept().await?;
 
-        let mut zmq_client_socket = zeromq::ReqSocket::new();
-        let remote_addr = format!("tcp://{}:{}", remote_node, ZMQ_SERVER_PORT);
-        zmq_client_socket.connect(&remote_addr).await?;
+            let remote_addr = format!("{}:{}", remote_node, 5555);
+            let mut client_stream = loop {
+                match <<L as Listener>::Stream as ConnectStream>::connect(&remote_addr).await {
+                    Ok(stream) => break stream, // success: break the loop
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::ConnectionRefused {
+                            tracing::info!("Connection refused, retrying...");
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        } else {
+                            return Err(e.into()); // some other error: give up
+                        }
+                    }
+                }
+            };
+            (client_stream, server_stream)
+        } else {
+            let remote_addr = format!("{}:{}", remote_node, 5555);
+            let mut client_stream = loop {
+                match <<L as Listener>::Stream as ConnectStream>::connect(&remote_addr).await {
+                    Ok(stream) => break stream, // success: break the loop
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::ConnectionRefused {
+                            tracing::info!("Connection refused, retrying...");
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        } else {
+                            return Err(e.into()); // some other error: give up
+                        }
+                    }
+                }
+            };
 
-        let msg = serde_json::to_string(&prepared_qp.endpoint()?)?;
-        zmq_client_socket.send(msg.into()).await?;
+            let (mut server_stream, _peer_addr) = listener.accept().await?;
+            (client_stream, server_stream)
+        };
 
-        let resp = zmq_server_socket.recv().await?;
+        // Send endpoint info to remote
+        let endpoint = prepared_qp.endpoint()?;
+        Self::send_json(&mut client_stream, &endpoint).await?;
+
+        // Receive endpoint info from remote
+        let remote_endpoint: QueuePairEndpoint = Self::recv_json(&mut server_stream).await?;
 
         // Do the infiniband handshake
-        let endpoint_str = String::from_utf8(
-            resp.get(0)
-                .ok_or(anyhow::anyhow!("Invalid zmq message received"))?
-                .to_vec(),
-        )?;
-        let endpoint: QueuePairEndpoint = serde_json::from_str(&endpoint_str)?;
-        let qp = prepared_qp.handshake(endpoint)?;
+        let qp = prepared_qp.handshake(remote_endpoint)?;
         // Store the queue pair
         self.qps.insert(remote_node.clone(), qp);
 
@@ -114,7 +195,7 @@ impl IBSocket {
         Ok(self.id - 1)
     }
 
-    /// Reads data using RDMA
+    /// RDMA operation
     pub fn rdma_op(
         &mut self,
         remote_node: &str,
@@ -190,6 +271,7 @@ impl IBSocket {
         )
     }
 
+    /// Writes data using RDMA
     pub fn rdma_write(
         &mut self,
         remote_node: &str,
@@ -281,15 +363,4 @@ pub fn parse_completion_error(completion: &ibverbs::ibv_wc) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_create_ib_socket() {
-        let socket = IBSocket::new();
-        assert!(socket.is_ok());
-    }
 }

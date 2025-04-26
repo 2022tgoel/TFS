@@ -17,6 +17,11 @@ pub struct ChunkVersionTable {
     inner: DashMap<(u64, u64), ChunkVersions>,
 }
 
+/// Invariants:
+/// 1. The clean version is always increasing.
+/// 2. The only dirty versions that are removed are lower than the clean version.
+/// 3. The dirty versions are always increasing. (1 and 2 help guarantee this)
+
 impl ChunkVersions {
     pub fn new() -> Self {
         Self {
@@ -46,13 +51,27 @@ impl ChunkVersionTable {
                 max(*v, version)
             } else {
                 version
-            };
+            } + 1;
             versions.dirty_versions.push(version);
             version
         } else {
             self.inner.insert((file_id, chunk_id), ChunkVersions::new());
             0
         }
+    }
+
+    pub fn insert_version(&self, file_id: u64, chunk_id: u64, version: u64) -> Result<()> {
+        let mut versions = self
+            .inner
+            .entry((file_id, chunk_id))
+            .or_insert(ChunkVersions::new());
+        if let Some(v) = versions.clean_version {
+            if v > version {
+                return Err(anyhow::anyhow!("Version is lower than the clean version"));
+            }
+        }
+        versions.dirty_versions.push(version);
+        Ok(())
     }
 
     pub fn get_version(&self, file_id: u64, chunk_id: u64) -> Option<u64> {

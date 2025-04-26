@@ -1,5 +1,5 @@
 use tfs::chunkserver::RpcServer;
-use tfs::net::utils::my_name;
+use tfs::net::{HostName, TokioTcpConnectionManager, my_name};
 use tokio::signal;
 use tracing_chrome::{ChromeLayerBuilder, TraceStyle};
 use tracing_flame::FlameLayer;
@@ -28,7 +28,10 @@ async fn main() {
     //     .init();
 
     let hostname = my_name().unwrap();
-    let server = RpcServer::new(hostname.clone()).await.unwrap();
+    let server =
+        RpcServer::<TokioTcpConnectionManager>::new(HostName::RegularName(hostname.clone()))
+            .await
+            .unwrap();
     println!("Starting chunkserver on {}", hostname);
     // Set up Ctrl+C handler
     tokio::select! {

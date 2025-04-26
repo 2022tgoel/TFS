@@ -1,4 +1,4 @@
-use crate::net::{IBSocket, MIN_WR_ID, parse_completion_error};
+use crate::net::{IBSocket, Listener, MIN_WR_ID, parse_completion_error};
 use anyhow::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -31,8 +31,8 @@ impl CompletionsManager {
         return self.requests.clone();
     }
 
-    pub async fn manage_completions(
-        ib_socket: Arc<Mutex<IBSocket>>,
+    pub async fn manage_completions<L: Listener>(
+        ib_socket: Arc<Mutex<IBSocket<L>>>,
         requests: Arc<DashMap<u64, mpsc::Sender<u64>>>,
     ) {
         let mut completions = [ibverbs::ibv_wc::default(); MAX_POLLED_COMPLETIONS];

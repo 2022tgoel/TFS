@@ -2,15 +2,20 @@ use std::env;
 use std::time::Instant;
 use tfs::client::RpcClient;
 use tfs::net::utils::my_name;
+use tfs::net::{HostName, TokioTcpConnectionManager};
+
 #[tokio::main]
 async fn main() {
     let hostname = my_name().unwrap();
     let peer = env::var("PEER_HOSTNAME").expect("PEER_HOSTNAME is not set");
 
     // Create RPC client
-    let mut client = RpcClient::new(hostname.clone(), peer.clone())
-        .await
-        .unwrap();
+    let mut client = RpcClient::<TokioTcpConnectionManager>::new(
+        HostName::RegularName(hostname.clone()),
+        peer.clone(),
+    )
+    .await
+    .unwrap();
 
     // Prepare test data
     let test_data = b"Hello, world!";

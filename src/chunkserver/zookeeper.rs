@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_zookeeper::*;
+use tracing::info;
 
 pub const ZOOKEEPER_CLIENT_PORT: u16 = 2181;
 const ZOOKEEPER_SESSION_TIMEOUT: u64 = 4000; // ms, this is twice the tickTime in zoo.cfg
@@ -19,10 +20,12 @@ pub struct ZookeeperClient {
 }
 
 impl ZookeeperClient {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(name: String) -> Result<Self> {
         let addr = format!("{}:{}", "127.0.0.1", ZOOKEEPER_CLIENT_PORT);
-        let (client, _default_watcher) = ZooKeeper::connect(&addr.parse()?).await?;
-        let name: Vec<u8> = my_name()?.into_bytes();
+        let (client, _default_watcher) = ZooKeeper::connect(&addr.parse()?)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to zookeeper: {}", e))?;
+        let name: Vec<u8> = name.into_bytes();
         let my_name: &'static [u8] = Box::leak(Box::new(name));
         // Construct the chain of chunkserver nodes in zookeeper
         let heartbeat_time = Arc::new(Mutex::new(Instant::now()));
@@ -35,9 +38,11 @@ impl ZookeeperClient {
             )
             .await?;
         match path {
-            Err(error::Create::NodeExists) => {}
+            Err(error::Create::NodeExists) => {
+                tracing::info!("chunkservers path already exists, skipping");
+            }
             _ => {
-                path?;
+                path.map_err(|e| anyhow::anyhow!("Failed to create chunkservers path: {}", e))?;
             }
         }
         let path = client
@@ -49,9 +54,11 @@ impl ZookeeperClient {
             )
             .await?;
         match path {
-            Err(error::Create::NodeExists) => {}
+            Err(error::Create::NodeExists) => {
+                tracing::info!("leases path already exists, skipping");
+            }
             _ => {
-                path?;
+                path.map_err(|e| anyhow::anyhow!("Failed to create leases path: {}", e))?;
             }
         }
         let node_path = client
@@ -61,7 +68,8 @@ impl ZookeeperClient {
                 Acl::open_unsafe(),
                 CreateMode::EphemeralSequential,
             )
-            .await??;
+            .await?
+            .map_err(|e| anyhow::anyhow!("Failed to create node path: {}", e))?;
         let heartbeat_path = client
             .create(
                 "/leases/heartbeat",
@@ -69,7 +77,8 @@ impl ZookeeperClient {
                 Acl::open_unsafe(),
                 CreateMode::EphemeralSequential,
             )
-            .await??;
+            .await?
+            .map_err(|e| anyhow::anyhow!("Failed to create heartbeat path: {}", e))?;
         tokio::spawn(Self::send_hearbeats(
             client.clone(),
             heartbeat_path.clone(),
@@ -88,7 +97,9 @@ impl ZookeeperClient {
     /// Returns a tuple of (is_head, next_node)
     pub async fn get_chain_info(&self) -> Result<(bool, Option<String>)> {
         loop {
+            tracing::info!("Getting children");
             let children = self.client.get_children("/chunkservers").await?;
+            tracing::info!("Children: {:?}", children);
             let Some(children) = children else {
                 return Err(anyhow::anyhow!(
                     "Failed to get children from zookeeper, chunkserver path doesn't exist"
@@ -106,7 +117,6 @@ impl ZookeeperClient {
             let next_node: Option<&String> = children
                 .iter()
                 .find(|child| child > &&node_path.to_string());
-            dbg!(&children, &node_path, &next_node);
             if let Some(next_node) = next_node {
                 match self
                     .client
@@ -115,7 +125,7 @@ impl ZookeeperClient {
                 {
                     Some((node_name, _)) => {
                         return Ok((
-                            children[0] == self.node_path,
+                            children[0] == node_path,
                             Some(String::from_utf8(node_name)?),
                         ));
                     }

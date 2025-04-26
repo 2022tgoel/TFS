@@ -15,7 +15,7 @@ async fn main() {
         "Number of infiniband devices: {}",
         ibverbs::devices().unwrap().len()
     );
-    let mut socket = IBSocket::new().unwrap();
+    // let mut socket = IBSocket::new().unwrap();
     // socket.connect(peers[0].clone()).await.unwrap();
     // println!("Connected to peer {}", peers[0]);
 }
