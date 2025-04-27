@@ -2,7 +2,52 @@ use serial_test::serial;
 use tfs::chunkserver::RpcServer;
 use tfs::client::RpcClient;
 use tfs::net::{HostName, TokioTcpConnectionManager};
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
+
+/// Spawns N servers and N clients, each with a unique 127.0.0.* address.
+/// Each client[i] connects to server[i].
+pub async fn spawn_servers_and_clients(
+    n: usize,
+) -> (
+    Vec<JoinHandle<()>>,
+    Vec<RpcClient<TokioTcpConnectionManager>>,
+) {
+    let mut server_tasks = Vec::with_capacity(n);
+    let mut clients = Vec::with_capacity(n);
+
+    // Start servers
+    for i in 1..=n {
+        let server_addr = format!("127.0.0.{}", i);
+        let task = tokio::spawn(async move {
+            let mut server = RpcServer::<TokioTcpConnectionManager>::new(HostName::RegularName(
+                server_addr.clone(),
+            ))
+            .await
+            .expect("Failed to start server");
+            server.serve().await.expect("Server crashed unexpectedly");
+        });
+        // Give server 1 time to start to have a deterministic chain
+        sleep(Duration::from_millis(500)).await;
+        server_tasks.push(task);
+    }
+
+    // Start clients
+    for i in 1..=n {
+        let client_addr = format!("127.0.0.{}", n + i);
+        let server_addr = format!("127.0.0.{}", i);
+        let mut client = RpcClient::<TokioTcpConnectionManager>::new(
+            HostName::RegularName(client_addr.clone()),
+            server_addr.clone(),
+        )
+        .await
+        .expect("Failed to create client");
+        client.connect_ib().await.expect("Failed to connect IB");
+        clients.push(client);
+    }
+
+    (server_tasks, clients)
+}
 
 #[tokio::test]
 #[serial]
@@ -10,7 +55,7 @@ async fn read_write_test() {
     // Start the server at 127.0.0.1
     let server_addr = "127.0.0.1".to_string();
     let server_task = tokio::spawn(async move {
-        let server =
+        let mut server =
             RpcServer::<TokioTcpConnectionManager>::new(HostName::RegularName(server_addr.clone()))
                 .await
                 .expect("Failed to start server");
@@ -55,69 +100,64 @@ async fn read_write_test() {
 #[serial]
 async fn read_write_crash_test() {
     println!("Starting read_write_crash_test");
-    let server_addr = "127.0.0.1".to_string();
-    let server1_task = tokio::spawn(async move {
-        let server =
-            RpcServer::<TokioTcpConnectionManager>::new(HostName::RegularName(server_addr.clone()))
-                .await
-                .expect("Failed to start server");
-        server.serve().await.expect("Server crashed unexpectedly");
-    });
-
-    // Give server 1 time to start to guarantee that it is the head of the chain
-    sleep(Duration::from_millis(1000)).await;
-
-    let server_addr = "127.0.0.2".to_string();
-    let server2_task = tokio::spawn(async move {
-        let server =
-            RpcServer::<TokioTcpConnectionManager>::new(HostName::RegularName(server_addr.clone()))
-                .await
-                .expect("Failed to start server");
-        server.serve().await.expect("Server crashed unexpectedly");
-    });
-
-    let client_addr = "127.0.0.3".to_string();
-    let mut client1 = RpcClient::<TokioTcpConnectionManager>::new(
-        HostName::RegularName(client_addr.clone()),
-        "127.0.0.1".to_string(),
-    )
-    .await
-    .expect("Failed to create client");
-
-    client1.connect_ib().await.expect("Failed to connect IB");
-
-    let client_addr = "127.0.0.4".to_string();
-    let mut client2 = RpcClient::<TokioTcpConnectionManager>::new(
-        HostName::RegularName(client_addr.clone()),
-        "127.0.0.2".to_string(),
-    )
-    .await
-    .expect("Failed to create client");
-
-    client2.connect_ib().await.expect("Failed to connect IB");
+    let (mut server_tasks, clients) = spawn_servers_and_clients(2).await;
 
     let test_data = b"Hello, world!";
-    client1
+    clients[0]
         .send_put_request(1, 1, test_data)
         .await
         .expect("Put request failed");
-    let get_result = client1
+    let get_result = clients[0]
         .send_get_request(1, 1, test_data.len())
         .await
         .expect("Get request failed");
     assert_eq!(&get_result[..], test_data);
 
     // Simulate server crash
-    server1_task.abort();
-    assert!(
-        server1_task.await.is_err(),
-        "Server did not crash as expected"
-    );
+    let handle = server_tasks.remove(0);
+    handle.abort();
+    assert!(handle.await.is_err(), "Server did not crash as expected");
 
     // client 2 should still be able to read the data
-    let get_result = client2
+    let get_result = clients[1]
         .send_get_request(1, 1, test_data.len())
         .await
         .expect("Get request failed");
     assert_eq!(&get_result[..], test_data);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn reconfigure_head_test() {
+    let (mut server_tasks, clients) = spawn_servers_and_clients(2).await;
+
+    let test_data = b"Hello, world!";
+    clients[0]
+        .send_put_request(1, 1, test_data)
+        .await
+        .expect("Put request failed");
+
+    // Simulate server crash
+    let handle = server_tasks.remove(0);
+    handle.abort();
+    assert!(handle.await.is_err(), "Server did not crash as expected");
+
+    // client 2 should still be able to read the data
+    let get_result = clients[1]
+        .send_get_request(1, 1, test_data.len())
+        .await
+        .expect("Get request failed");
+    assert_eq!(&get_result[..], test_data);
+
+    sleep(Duration::from_millis(6000)).await;
+
+    // Client 2 should now be accessing the new head
+    clients[1]
+        .send_put_request(2, 1, test_data)
+        .await
+        .expect("Put request failed");
+}
+
+// Additional tests that I need to write:
+// - Concurrent put requests -- only one is processed
+// - Dirty version handling

@@ -28,7 +28,7 @@ async fn main() {
     //     .init();
 
     let hostname = my_name().unwrap();
-    let server =
+    let mut server =
         RpcServer::<TokioTcpConnectionManager>::new(HostName::RegularName(hostname.clone()))
             .await
             .unwrap();

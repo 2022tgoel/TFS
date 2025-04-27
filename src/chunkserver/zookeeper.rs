@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio_zookeeper::*;
 use tracing::info;
 
@@ -20,7 +21,7 @@ pub struct ZookeeperClient {
 }
 
 impl ZookeeperClient {
-    pub async fn new(name: String) -> Result<Self> {
+    pub async fn new(name: String) -> Result<(Self, JoinHandle<()>)> {
         let addr = format!("{}:{}", "127.0.0.1", ZOOKEEPER_CLIENT_PORT);
         let (client, _default_watcher) = ZooKeeper::connect(&addr.parse()?)
             .await
@@ -79,18 +80,21 @@ impl ZookeeperClient {
             )
             .await?
             .map_err(|e| anyhow::anyhow!("Failed to create heartbeat path: {}", e))?;
-        tokio::spawn(Self::send_hearbeats(
+        let heartbeat_task = tokio::spawn(Self::send_hearbeats(
             client.clone(),
             heartbeat_path.clone(),
             heartbeat_time.clone(),
         ));
-        Ok(Self {
-            node_path,
-            heartbeat_path,
-            client,
-            // event_stream: Box::pin(default_watcher),
-            heartbeat_time,
-        })
+        Ok((
+            Self {
+                node_path,
+                heartbeat_path,
+                client,
+                // event_stream: Box::pin(default_watcher),
+                heartbeat_time,
+            },
+            heartbeat_task,
+        ))
     }
 
     /// Check if the current node is the head of the chain
@@ -117,6 +121,7 @@ impl ZookeeperClient {
             let next_node: Option<&String> = children
                 .iter()
                 .find(|child| child > &&node_path.to_string());
+            dbg!(&children, &node_path, &next_node);
             if let Some(next_node) = next_node {
                 match self
                     .client
@@ -168,12 +173,13 @@ impl ZookeeperClient {
         client: ZooKeeper,
         heartbeat_path: String,
         heartbeat_time: Arc<Mutex<Instant>>,
-    ) -> Result<()> {
+    ) {
         loop {
             let time = Instant::now();
-            client.set_data(&heartbeat_path, None, &b"Hi"[..]).await??;
+            client.set_data(&heartbeat_path, None, &b"Hi"[..]).await;
             *heartbeat_time.lock().await = time;
             // Have the lease renewal loop run slightly faster than the lease timeout
+            println!("Sending heartbeat, path: {}", heartbeat_path);
             tokio::time::sleep(Duration::from_millis(ZOOKEEPER_SESSION_TIMEOUT / 2)).await;
         }
     }

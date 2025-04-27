@@ -93,7 +93,7 @@ fn rpc_server_connect_test() -> Result {
     let mut sim = Builder::new().enable_tokio_io().build();
 
     sim.host("server", || async {
-        let server = RpcServer::<TurmoilTcpConnectionManager>::new(HostName::TurmoilName(
+        let mut server = RpcServer::<TurmoilTcpConnectionManager>::new(HostName::TurmoilName(
             "server".to_string(),
         ))
         .await?;
@@ -135,7 +135,7 @@ fn rpc_client_connect_test() -> Result {
     let mut sim = Builder::new().enable_tokio_io().build();
 
     sim.host("server", || async {
-        let server = RpcServer::<TurmoilTcpConnectionManager>::new(HostName::TurmoilName(
+        let mut server = RpcServer::<TurmoilTcpConnectionManager>::new(HostName::TurmoilName(
             "server".to_string(),
         ))
         .await?;

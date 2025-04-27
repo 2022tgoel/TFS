@@ -12,6 +12,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tracing::{Level, info, span};
 
@@ -92,6 +93,7 @@ where
     zookeeper: Arc<Mutex<ZookeeperClient>>,
     peer: Arc<Mutex<Option<PeerServer<TcpConnectionManager>>>>,
     request_id: AtomicU64,
+    child_tasks: Vec<JoinHandle<()>>,
 }
 
 impl<TcpConnectionManager> RpcServer<TcpConnectionManager>
@@ -117,18 +119,20 @@ where
         let completions_manager = CompletionsManager::new();
         let ib_socket_clone = ib_socket.clone();
         let map_view = completions_manager.map_view();
-        tokio::spawn(async move {
+        let completions_manager_task = tokio::spawn(async move {
             CompletionsManager::manage_completions(ib_socket_clone, map_view).await
         });
         // Create a ring of memory regions to read data from the client
-        let zookeeper = ZookeeperClient::new(local_addr.get_name().to_string())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create zookeeper client: {}", e))?;
+        let (zookeeper, zookeeper_heartbeat) =
+            ZookeeperClient::new(local_addr.get_name().to_string())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create zookeeper client: {}", e))?;
 
         let (is_head, _) = zookeeper.get_chain_info().await?;
         if is_head {
             tracing::info!("{} is the head of the chain", local_addr.get_name());
         }
+        let child_tasks = vec![completions_manager_task, zookeeper_heartbeat];
         Ok(Self {
             local_addr,
             ib_socket,
@@ -138,10 +142,11 @@ where
             zookeeper: Arc::new(Mutex::new(zookeeper)),
             peer: Arc::new(Mutex::new(None)),
             request_id: AtomicU64::new(0),
+            child_tasks,
         })
     }
 
-    pub async fn serve(&self) -> Result<()> {
+    pub async fn serve(&mut self) -> Result<()> {
         let listener = if self.local_addr.is_turmoil() {
             TcpConnectionManager::Listener::bind((IpAddr::from(Ipv4Addr::UNSPECIFIED), SERVER_PORT))
                 .await?
@@ -163,7 +168,7 @@ where
             let zookeeper = self.zookeeper.clone();
             let peer = self.peer.clone();
             let request_id = self.request_id.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(async move {
+            let child_task = tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
                     socket,
                     ib_socket,
@@ -180,6 +185,7 @@ where
                     eprintln!("Error handling RPC connection: {}", e);
                 }
             });
+            self.child_tasks.push(child_task);
         }
         Ok(())
     }
@@ -458,5 +464,17 @@ where
             }
         }
         Ok(())
+    }
+}
+
+impl<TcpConnectionManager> Drop for RpcServer<TcpConnectionManager>
+where
+    TcpConnectionManager: ManagerCreate + ManageConnection<Error = io::Error> + Clone,
+{
+    fn drop(&mut self) {
+        println!("Shutting down RPC server");
+        for task in self.child_tasks.iter_mut() {
+            task.abort();
+        }
     }
 }
