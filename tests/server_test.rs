@@ -1,3 +1,9 @@
+// Zookeeper needs to be manually started for these tests to work.
+// SLURM_NODELIST=`hostname` ./zookeeper/launch.py start
+// Also, this file should be run with the test-config feature enabled.
+// Example: cargo test --features test-config read_write_test -- --nocapture
+
+use futures::future::join_all;
 use serial_test::serial;
 use tfs::chunkserver::RpcServer;
 use tfs::client::RpcClient;
@@ -42,6 +48,7 @@ pub async fn spawn_servers_and_clients(
         )
         .await
         .expect("Failed to create client");
+        println!("Connecting to {}", server_addr);
         client.connect_ib().await.expect("Failed to connect IB");
         clients.push(client);
     }
@@ -152,12 +159,90 @@ async fn reconfigure_head_test() {
     sleep(Duration::from_millis(6000)).await;
 
     // Client 2 should now be accessing the new head
+    // TODO: Include the client onwership of the message in the request,
+    // and reject the message if it is not the head.
     clients[1]
         .send_put_request(2, 1, test_data)
         .await
         .expect("Put request failed");
 }
 
-// Additional tests that I need to write:
 // - Concurrent put requests -- only one is processed
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn concurrent_put_test() {
+    let (mut server_tasks, clients) = spawn_servers_and_clients(3).await;
+
+    let mut tasks = Vec::new();
+    for i in 0..5 {
+        let client = clients[0].clone();
+        tasks.push(tokio::spawn(async move {
+            client
+                .send_put_request(1, 1, format!("Hello, world! {}", i).as_bytes())
+                .await
+                .expect("Put request failed");
+        }));
+    }
+
+    let res = join_all(tasks).await;
+    for r in res {
+        assert!(r.is_ok(), "Put request failed");
+    }
+
+    // Check that only one of the requests was processed
+    let get_result = clients[0]
+        .send_get_request(1, 1, 15)
+        .await
+        .expect("Get request failed");
+    let get_result2 = clients[1]
+        .send_get_request(1, 1, 15)
+        .await
+        .expect("Get request failed");
+    let get_result3 = clients[2]
+        .send_get_request(1, 1, 15)
+        .await
+        .expect("Get request failed");
+    println!("get_result: {:?}", String::from_utf8_lossy(&get_result));
+    println!("get_result2: {:?}", String::from_utf8_lossy(&get_result2));
+    println!("get_result3: {:?}", String::from_utf8_lossy(&get_result3));
+    assert_eq!(get_result, get_result2);
+    assert_eq!(get_result, get_result3);
+}
+
 // - Dirty version handling
+// #[tokio::test(flavor = "multi_thread")]
+// #[serial]
+// async fn dirty_put_test() {
+//     let (mut server_tasks, clients) = spawn_servers_and_clients(3).await;
+
+//     let test_data = b"Hello, world!";
+//     let client = clients[0].clone();
+//     client.send_put_request(1, 1, test_data).await.expect("Put request failed");
+//     let t1 = tokio::spawn(async move {
+//         clients
+//             .send_put_request(1, 1, b"Hello, world! 2")
+//             .await
+//             .expect("Put request failed");
+//     });
+
+//     // Simulate server crash
+//     let handle = server_tasks.remove(1);
+//     let t2 = tokio::spawn(async move {
+//         handle.abort();
+//     });
+
+//     tokio::join!(t1, t2);
+
+//     // client 3 should still be able to read the data
+//     let get_result = clients[2]
+//         .send_get_request(1, 1, test_data.len())
+//         .await
+//         .expect("Get request failed");
+//     assert_eq!(&get_result[..], test_data);
+
+//     // client 1 should see stale data
+//     let get_result = clients[0]
+//         .send_get_request(1, 1, test_data.len())
+//         .await;
+//     assert_ne!(&get_result[..], test_data);
+// }

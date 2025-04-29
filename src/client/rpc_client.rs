@@ -12,10 +12,10 @@ use tracing::info;
 // For testing, we need to limit the number of buffers, since
 // the servers and clients are sharing the same physical hardware
 // Reduces startup time.
-#[cfg(test)]
+#[cfg(feature = "test-config")]
 const NUM_BUFFERS: usize = 5;
 
-#[cfg(not(test))]
+#[cfg(not(feature = "test-config"))]
 const NUM_BUFFERS: usize = 100;
 
 pub struct RpcClient<TcpConnectionManager>
@@ -197,9 +197,6 @@ where
         let mut buf = vec![0; 1024];
         let n = conn.read(&mut buf).await?;
         let response: RpcMessage = serde_json::from_slice(&buf[..n])?;
-
-        // Print the data in the buffer
-        println!("Data in buffer: {:?}", buffer[..15].to_vec());
 
         match response {
             RpcMessage::Response(_) => Ok(buffer[..size].to_vec()),

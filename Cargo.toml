@@ -3,6 +3,9 @@ name = "tfs"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+test-config = []
+
 [dependencies]
 anyhow = "1.0.97"
 async-trait = "0.1.88"

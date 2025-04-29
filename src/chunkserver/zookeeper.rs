@@ -121,7 +121,7 @@ impl ZookeeperClient {
             let next_node: Option<&String> = children
                 .iter()
                 .find(|child| child > &&node_path.to_string());
-            dbg!(&children, &node_path, &next_node);
+            // dbg!(&children, &node_path, &next_node);
             if let Some(next_node) = next_node {
                 match self
                     .client

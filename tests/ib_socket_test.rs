@@ -22,7 +22,7 @@ async fn test_ib_socket_rdma_op() -> Result<()> {
 
     // Register memory regions
     let mut mr1 = socket1.register_memory(16)?;
-    let mut mr2 = socket2.register_memory(16)?;
+    let mr2 = socket2.register_memory(16)?;
 
     // Write some data to mr1
     let src_data = b"hello_ib_socket!";

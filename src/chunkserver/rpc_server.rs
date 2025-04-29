@@ -21,15 +21,15 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(15); // How long to wait for a
 
 // For testing, we need to limit the number of buffers, since
 // the servers and clients are sharing the same physical hardware
-// Reduces startup time.
-#[cfg(test)]
+// Also reduces startup time.
+#[cfg(feature = "test-config")]
 const NUM_BUFFERS: usize = 5;
-#[cfg(test)]
+#[cfg(feature = "test-config")]
 pub const CHUNK_SIZE: usize = 1000;
 
-#[cfg(not(test))]
+#[cfg(not(feature = "test-config"))]
 const NUM_BUFFERS: usize = 100;
-#[cfg(not(test))]
+#[cfg(not(feature = "test-config"))]
 pub const CHUNK_SIZE: usize = 10000000; // 10MB chunk size
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -103,11 +103,12 @@ where
 {
     pub async fn new(local_addr: HostName) -> Result<Self> {
         // make /scratch/files if it doesn't exist
-        if !std::path::Path::new("/scratch/files").exists() {
-            std::fs::create_dir_all("/scratch/files")?;
+        if !std::path::Path::new(&format!("/scratch/files/{}", local_addr.get_name())).exists() {
+            std::fs::create_dir_all(&format!("/scratch/files/{}", local_addr.get_name()))?;
         }
 
         let ib_socket = IBSocket::<TcpConnectionManager::Listener>::new()?;
+        println!("ib_socket created. chunk size: {}", CHUNK_SIZE);
         let buffers = (0..NUM_BUFFERS)
             .map(|_| {
                 ib_socket
@@ -115,6 +116,7 @@ where
                     .map(|mem| Arc::new(Mutex::new(mem)))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        println!("buffers created. chunk size: {}", CHUNK_SIZE);
         let ib_socket = Arc::new(Mutex::new(ib_socket));
         let completions_manager = CompletionsManager::new();
         let ib_socket_clone = ib_socket.clone();
@@ -130,15 +132,17 @@ where
 
         let (is_head, _) = zookeeper.get_chain_info().await?;
         if is_head {
-            tracing::info!("{} is the head of the chain", local_addr.get_name());
+            println!("{} is the head of the chain", local_addr.get_name());
         }
         let child_tasks = vec![completions_manager_task, zookeeper_heartbeat];
         Ok(Self {
-            local_addr,
+            local_addr: local_addr.clone(),
             ib_socket,
             completions_manager: Arc::new(Mutex::new(completions_manager)),
             buffers,
-            chunk_version_table: Arc::new(ChunkVersionTable::new()),
+            chunk_version_table: Arc::new(ChunkVersionTable::new(
+                local_addr.get_name().to_string(),
+            )),
             zookeeper: Arc::new(Mutex::new(zookeeper)),
             peer: Arc::new(Mutex::new(None)),
             request_id: AtomicU64::new(0),
@@ -225,10 +229,7 @@ where
                     // Query zookeeper for chain information
                     let (is_head, next_node) = zookeeper.lock().await.get_chain_info().await?;
                     let is_tail = next_node.is_none();
-                    println!(
-                        "Received PutRequest from {} is_head: {}, next_node: {:?}",
-                        put_info.client_name, is_head, next_node
-                    );
+
                     let version = if is_head {
                         chunk_version_table.get_new_version(put_info.file_id, put_info.chunk_id)
                     } else {
@@ -244,7 +245,10 @@ where
                         }
                         put_info.version
                     };
-                    println!("Will forward to {:?}", next_node);
+                    println!(
+                        "Received PutRequest from {} is_head: {}, next_node: {:?}, version: {}",
+                        put_info.client_name, is_head, next_node, version
+                    );
                     // Pick an available local buffer from the ring
                     let mut buffer;
                     'outer: loop {
@@ -272,9 +276,6 @@ where
                         put_info.rkey,
                         put_info.size,
                     )?;
-
-                    let must_connect =
-                        next_node.is_some() && !ib.is_connected(&next_node.clone().unwrap());
                     drop(ib);
 
                     let (tx, mut rx) = mpsc::channel(1);
@@ -290,7 +291,11 @@ where
                         .await
                         .ok_or(anyhow::anyhow!("Error receiving from mpsc channel"))?;
 
-                    println!("Received completion for wr_id {}", wr_id);
+                    println!(
+                        "{}: Received completion for wr_id {}",
+                        local_addr.get_name(),
+                        wr_id
+                    );
 
                     // Forward the request to the next node in the chain
                     if let Some(next_node) = next_node {
@@ -310,13 +315,13 @@ where
                         let pool = peer.as_ref().unwrap().pool.clone();
                         let mut next_socket = pool.get().await?;
                         drop(peer);
-                        if must_connect {
+                        let mut ib = ib_socket.lock().await;
+                        if !ib.is_connected(&next_node) {
                             let resp = RpcMessage::CreateQueuePair(QPInfo {
                                 addr: local_addr.clone().get_name().to_string(),
                             });
-                            println!("Sending CreateQueuePair to {}", next_node);
                             next_socket.write_all(&serde_json::to_vec(&resp)?).await?;
-                            let mut ib = ib_socket.lock().await;
+
                             ib.connect(local_addr.clone(), next_node.clone()).await?;
                             drop(ib);
                             let mut buf = vec![0; 1024];
@@ -359,8 +364,11 @@ where
                     }
 
                     let file_path = format!(
-                        "/scratch/files/{}_{}_{}.txt",
-                        put_info.file_id, put_info.chunk_id, version
+                        "/scratch/files/{}/{}_{}_{}.txt",
+                        local_addr.get_name(),
+                        put_info.file_id,
+                        put_info.chunk_id,
+                        version
                     );
                     let mut file = File::create(file_path.clone()).await?;
                     file.write_all(&buffer[..put_info.size]).await?;
@@ -392,8 +400,16 @@ where
                             let _get_guard = get_span.enter();
 
                             let file_path = format!(
-                                "/scratch/files/{}_{}_{}.txt",
-                                get_info.file_id, get_info.chunk_id, version
+                                "/scratch/files/{}/{}_{}_{}.txt",
+                                local_addr.get_name(),
+                                get_info.file_id,
+                                get_info.chunk_id,
+                                version
+                            );
+                            println!(
+                                "{}: Checking if file exists: {}",
+                                local_addr.get_name(),
+                                file_path
                             );
                             if !std::path::Path::new(&file_path).exists() {
                                 eprintln!("File {} does not exist", file_path);
