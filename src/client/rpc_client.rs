@@ -1,4 +1,4 @@
-use crate::chunkserver::{CHUNK_SIZE, GetInfo, PutInfo, QPInfo, RpcMessage, SERVER_PORT};
+use crate::chunkserver::{CHUNK_SIZE, GetInfo, PutInfo, QPInfo, RpcMessage, SERVER_PORT, Status};
 use crate::net::{HostName, IBSocket, ManagerCreate, NUM_CONNS, create_tcp_pool};
 use anyhow::Result;
 use bb8::{ManageConnection, Pool};
@@ -199,7 +199,9 @@ where
         let response: RpcMessage = serde_json::from_slice(&buf[..n])?;
 
         match response {
-            RpcMessage::Response(_) => Ok(buffer[..size].to_vec()),
+            RpcMessage::Response(Status::Success) => Ok(buffer[..size].to_vec()),
+            RpcMessage::Response(Status::StaleData) => Err(anyhow::anyhow!("Stale data")),
+            RpcMessage::Response(Status::Failure) => Err(anyhow::anyhow!("Failure")),
             _ => Err(anyhow::anyhow!("Unexpected response type")),
         }
     }

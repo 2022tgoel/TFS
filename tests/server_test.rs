@@ -210,39 +210,43 @@ async fn concurrent_put_test() {
 }
 
 // - Dirty version handling
-// #[tokio::test(flavor = "multi_thread")]
-// #[serial]
-// async fn dirty_put_test() {
-//     let (mut server_tasks, clients) = spawn_servers_and_clients(3).await;
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn dirty_put_test() {
+    let (mut server_tasks, clients) = spawn_servers_and_clients(3).await;
 
-//     let test_data = b"Hello, world!";
-//     let client = clients[0].clone();
-//     client.send_put_request(1, 1, test_data).await.expect("Put request failed");
-//     let t1 = tokio::spawn(async move {
-//         clients
-//             .send_put_request(1, 1, b"Hello, world! 2")
-//             .await
-//             .expect("Put request failed");
-//     });
+    let test_data = b"Hello, world!";
+    let client = clients[0].clone();
+    client
+        .send_put_request(1, 1, test_data)
+        .await
+        .expect("Put request failed");
+    let t1 = tokio::spawn(async move {
+        client
+            .send_put_request(1, 1, b"Attempt to overwrite")
+            .await
+            .expect("Put request failed");
+    });
 
-//     // Simulate server crash
-//     let handle = server_tasks.remove(1);
-//     let t2 = tokio::spawn(async move {
-//         handle.abort();
-//     });
+    // Simulate server crash
+    let handle = server_tasks.remove(1);
+    let t2 = tokio::spawn(async move {
+        handle.abort();
+    });
 
-//     tokio::join!(t1, t2);
+    let res = join_all(vec![t1, t2]).await;
 
-//     // client 3 should still be able to read the data
-//     let get_result = clients[2]
-//         .send_get_request(1, 1, test_data.len())
-//         .await
-//         .expect("Get request failed");
-//     assert_eq!(&get_result[..], test_data);
+    // client 3 should still be able to read the data
+    let get_result = clients[2]
+        .send_get_request(1, 1, test_data.len())
+        .await
+        .expect("Get request failed");
+    assert_eq!(&get_result[..], test_data);
 
-//     // client 1 should see stale data
-//     let get_result = clients[0]
-//         .send_get_request(1, 1, test_data.len())
-//         .await;
-//     assert_ne!(&get_result[..], test_data);
-// }
+    // client 1 should see stale data
+    let get_result = clients[0].send_get_request(1, 1, test_data.len()).await;
+    assert!(
+        get_result.is_err(),
+        "Client 1 should not be able to read the data"
+    );
+}

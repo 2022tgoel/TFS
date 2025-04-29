@@ -8,6 +8,7 @@ struct ChunkVersions {
     dirty_versions: Vec<u64>,
 }
 
+#[derive(PartialEq)]
 pub enum State {
     Commited,
     Aborted,
@@ -20,8 +21,7 @@ pub struct ChunkVersionTable {
 
 /// Invariants:
 /// 1. The clean version is always increasing.
-/// 2. The only dirty versions that are removed are lower than the clean version.
-/// 3. The dirty versions are always increasing. (1 and 2 help guarantee this)
+/// 2. The dirty versions are always increasing. (1 and 2 help guarantee this)
 
 impl ChunkVersions {
     pub fn new_with_version(version: u64) -> Self {
@@ -100,6 +100,14 @@ impl ChunkVersionTable {
         None
     }
 
+    pub fn remove_dirty_version(&self, file_id: u64, chunk_id: u64, version: u64) -> Result<()> {
+        let mut versions = self.inner.get_mut(&(file_id, chunk_id));
+        if let Some(mut versions) = versions {
+            versions.dirty_versions.retain(|&x| x != version);
+        }
+        Ok(())
+    }
+
     pub fn commit_version(&self, file_id: u64, chunk_id: u64, version: u64) -> Result<State> {
         let mut versions: RefMut<'_, (u64, u64), ChunkVersions> = self
             .inner
@@ -108,7 +116,6 @@ impl ChunkVersionTable {
 
         if let Some(v) = versions.clean_version {
             if v > version {
-                versions.dirty_versions.retain(|&x| x != version);
                 return Ok(State::Aborted);
             } else {
                 std::fs::remove_file(format!(
@@ -120,22 +127,6 @@ impl ChunkVersionTable {
 
         versions.clean_version = Some(version);
         versions.dirty_versions.retain(|&x| x != version);
-        let mut remove = Vec::new();
-        for v in versions.dirty_versions.iter() {
-            if *v < version {
-                remove.push(*v);
-            }
-        }
-        for v in remove.iter() {
-            if std::fs::remove_file(format!(
-                "/scratch/files/{}/{}_{}_{}.txt",
-                self.name, file_id, chunk_id, v
-            ))
-            .is_ok()
-            {
-                versions.dirty_versions.retain(|&x| x != *v);
-            }
-        }
         Ok(State::Commited)
     }
 }

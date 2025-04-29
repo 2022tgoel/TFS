@@ -63,6 +63,7 @@ pub struct GetInfo {
 pub enum Status {
     Success,
     StaleData,
+    Failure,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -340,25 +341,37 @@ where
                         });
                         next_socket.write_all(&serde_json::to_vec(&resp)?).await?;
                         let mut buf = vec![0; 1024];
-                        let n = timeout(RPC_TIMEOUT, next_socket.read(&mut buf))
-                            .await
-                            .map_err(|_| {
-                                anyhow::anyhow!(format!(
-                                    "Timeout waiting for response from next node {}",
-                                    next_node
-                                ))
-                            })??;
-                        let msg: RpcMessage = serde_json::from_slice(&buf[..n])?;
-                        match msg {
-                            RpcMessage::Response(Status::Success) => {}
-                            RpcMessage::Response(Status::StaleData) => {
-                                let resp = RpcMessage::Response(Status::StaleData);
-                                println!("Sending StaleData to {}", local_addr.get_name());
+                        let n = timeout(RPC_TIMEOUT, next_socket.read(&mut buf)).await;
+                        match n {
+                            Err(_) | Ok(Err(_)) | Ok(Ok(0)) => {
+                                // The server crashed or there was a network partition
+                                println!(
+                                    "{}: Server crashed or there was a network partition",
+                                    local_addr.get_name()
+                                );
+                                let resp = RpcMessage::Response(Status::Failure);
                                 socket.write_all(&serde_json::to_vec(&resp)?).await?;
                                 continue;
                             }
-                            _ => {
-                                eprintln!("Error forwarding request to next node");
+                            Ok(Ok(n)) => {
+                                let msg: RpcMessage = serde_json::from_slice(&buf[..n])?;
+                                match msg {
+                                    RpcMessage::Response(Status::Success) => {}
+                                    RpcMessage::Response(Status::StaleData) => {
+                                        chunk_version_table.remove_dirty_version(
+                                            put_info.file_id,
+                                            put_info.chunk_id,
+                                            version,
+                                        )?;
+                                        let resp = RpcMessage::Response(Status::StaleData);
+                                        println!("Sending StaleData to {}", local_addr.get_name());
+                                        socket.write_all(&serde_json::to_vec(&resp)?).await?;
+                                        continue;
+                                    }
+                                    _ => {
+                                        eprintln!("Error forwarding request to next node");
+                                    }
+                                }
                             }
                         }
                     }
@@ -380,15 +393,25 @@ where
                             .update_size(put_info.file_id, put_info.size)
                             .await?;
                     }
-                    if let State::Aborted = chunk_version_table.commit_version(
-                        put_info.file_id,
-                        put_info.chunk_id,
-                        version,
-                    )? {
+                    if State::Aborted
+                        == chunk_version_table.commit_version(
+                            put_info.file_id,
+                            put_info.chunk_id,
+                            version,
+                        )?
+                    {
+                        chunk_version_table.remove_dirty_version(
+                            put_info.file_id,
+                            put_info.chunk_id,
+                            version,
+                        )?;
                         std::fs::remove_file(file_path)?;
+                        let resp = RpcMessage::Response(Status::StaleData);
+                        socket.write_all(&serde_json::to_vec(&resp)?).await?;
+                    } else {
+                        let resp = RpcMessage::Response(Status::Success);
+                        socket.write_all(&serde_json::to_vec(&resp)?).await?;
                     }
-                    let resp = RpcMessage::Response(Status::Success);
-                    socket.write_all(&serde_json::to_vec(&resp)?).await?;
                 }
                 RpcMessage::GetRequest(get_info) => {
                     println!("Received GetRequest from {}", get_info.client_name);
