@@ -176,10 +176,12 @@ impl ZookeeperClient {
     ) {
         loop {
             let time = Instant::now();
-            client.set_data(&heartbeat_path, None, &b"Hi"[..]).await;
+            let res = client.set_data(&heartbeat_path, None, &b"Hi"[..]).await;
+            if res.is_err() {
+                return;
+            }
             *heartbeat_time.lock().await = time;
             // Have the lease renewal loop run slightly faster than the lease timeout
-            println!("Sending heartbeat, path: {}", heartbeat_path);
             tokio::time::sleep(Duration::from_millis(ZOOKEEPER_SESSION_TIMEOUT / 2)).await;
         }
     }

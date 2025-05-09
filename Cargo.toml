@@ -59,3 +59,11 @@ path = "bin/client/fuse.rs"
 [[bin]]
 name = "perfetto"
 path = "bin/perfetto_test.rs"
+
+[[bin]]
+name = "tcp_server"
+path = "bin/perf_test/tcp_server.rs"
+
+[[bin]]
+name = "tcp_client"
+path = "bin/perf_test/tcp_client.rs"
