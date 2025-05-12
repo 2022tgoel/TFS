@@ -1,6 +1,6 @@
 # TFS: A high-performance networked filesystem
 
-For a description of the design, see [the paper](./paper.pdf).
+For a description of the design, see [the paper](./paper.pdf) or the [presentation](https://docs.google.com/presentation/d/1fSLjpgp9EG-cxb1CdYCkz4d2E1V-QAWIQkQRKWq3bNU/edit?usp=sharing).
 
 This filesystem is built to run on the MIT engaging cluster.
 

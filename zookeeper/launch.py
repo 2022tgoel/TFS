@@ -40,6 +40,7 @@ if __name__ == "__main__":
         data_dir = "/scratch/zookeeper"
         # Remove all existing files in the data directory
         shutil.rmtree(data_dir, ignore_errors=True)
+        shutil.rmtree("/scratch/files", ignore_errors=True)
         # Create the data directory
         os.makedirs(data_dir, exist_ok=True)
 
